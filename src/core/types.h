@@ -58,8 +58,12 @@ enum class GPURenderer : u8
   HardwareD3D11,
   HardwareD3D12,
 #endif
+#ifdef WITH_VULKAN
   HardwareVulkan,
+#endif
+#ifdef WITH_OPENGL
   HardwareOpenGL,
+#endif
   Software,
   Count
 };
@@ -105,16 +109,25 @@ enum class DisplayAspectRatio : u8
   Count
 };
 
+enum class DisplayAlignment
+{
+  LeftOrTop,
+  Center,
+  RightOrBottom,
+  Count
+};
+
 enum class AudioBackend : u8
 {
   Null,
+#ifdef WITH_CUBEB
   Cubeb,
+#endif
 #ifdef _WIN32
   XAudio2,
 #endif
-#ifndef ANDROID
-  SDL,
-#else
+#ifdef __ANDROID__
+  AAudio,
   OpenSLES,
 #endif
   Count
@@ -126,7 +139,7 @@ enum class ControllerType
   DigitalController,
   AnalogController,
   AnalogJoystick,
-  NamcoGunCon,
+  GunCon,
   PlayStationMouse,
   NeGcon,
   Count

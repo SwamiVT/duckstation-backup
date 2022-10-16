@@ -1,38 +1,48 @@
 #pragma once
-#include "../types.h"
-#include <glad.h>
+#include "../gpu_texture.h"
+#include "loader.h"
+#include <tuple>
 
 namespace GL {
-class Texture
+
+class Texture final : public GPUTexture
 {
 public:
   Texture();
   Texture(Texture&& moved);
   ~Texture();
 
-  bool Create(u32 width, u32 height, u32 samples, GLenum internal_format, GLenum format, GLenum type,
-              const void* data = nullptr, bool linear_filter = false, bool wrap = false);
-  void Replace(u32 width, u32 height, GLenum internal_format, GLenum format, GLenum type, const void* data);
-  bool CreateFramebuffer();
+  static bool UseTextureStorage(bool multisampled);
+  static const std::tuple<GLenum, GLenum, GLenum>& GetPixelFormatMapping(Format format);
 
+  ALWAYS_INLINE GLuint GetGLId() const { return m_id; }
+  bool IsValid() const override { return m_id != 0; }
+
+  bool Create(u32 width, u32 height, u32 layers, u32 levels, u32 samples, Format format, const void* data = nullptr,
+              u32 data_pitch = 0, bool linear = true, bool wrap = true);
   void Destroy();
 
-  void SetLinearFilter(bool enabled);
+  void Replace(u32 width, u32 height, GLenum internal_format, GLenum format, GLenum type, const void* data);
+  void ReplaceImage(u32 layer, u32 level, GLenum format, GLenum type, const void* data);
+  void ReplaceSubImage(u32 layer, u32 level, u32 x, u32 y, u32 width, u32 height, GLenum format, GLenum type,
+                       const void* data);
+  bool CreateFramebuffer();
 
-  bool IsValid() const { return m_id != 0; }
-  bool IsMultisampled() const { return m_samples > 1; }
-  GLuint GetGLId() const { return m_id; }
-  u32 GetWidth() const { return m_width; }
-  u32 GetHeight() const { return m_height; }
-  u32 GetSamples() const { return m_samples; }
+  bool UseTextureStorage() const;
 
-  GLuint GetGLFramebufferID() const { return m_fbo_id; }
-  GLenum GetGLTarget() const { return IsMultisampled() ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D; }
+  void SetLinearFilter(bool enabled) const;
+  void SetWrap(bool enabled) const;
 
-  void Bind();
-  void BindFramebuffer(GLenum target = GL_DRAW_FRAMEBUFFER);
+  ALWAYS_INLINE GLuint GetGLFramebufferID() const { return m_fbo_id; }
+  ALWAYS_INLINE GLenum GetGLTarget() const
+  {
+    return (IsMultisampled() ? (IsTextureArray() ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D_MULTISAMPLE_ARRAY) :
+                               (IsTextureArray() ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D));
+  }
 
-  static void Unbind();
+  void Bind() const;
+  void BindFramebuffer(GLenum target = GL_DRAW_FRAMEBUFFER) const;
+  void Unbind() const;
 
   Texture& operator=(const Texture& copy) = delete;
   Texture& operator=(Texture&& moved);
@@ -44,10 +54,6 @@ public:
 
 private:
   GLuint m_id = 0;
-  u32 m_width = 0;
-  u32 m_height = 0;
-  u32 m_samples = 0;
-
   GLuint m_fbo_id = 0;
 };
 

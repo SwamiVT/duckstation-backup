@@ -1,14 +1,16 @@
 #include "memorycardeditordialog.h"
 #include "common/file_system.h"
+#include "common/path.h"
 #include "common/string_util.h"
-#include "core/host_interface.h"
+#include "core/host.h"
+#include "core/settings.h"
 #include "qtutils.h"
 #include <QtCore/QFileInfo>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QMessageBox>
 
-static constexpr char MEMORY_CARD_IMAGE_FILTER[] =
-  QT_TRANSLATE_NOOP("MemoryCardEditorDialog", "All Memory Card Types (*.mcd *.mcr *.mc)");
+static constexpr char MEMORY_CARD_IMAGE_FILTER[] = QT_TRANSLATE_NOOP(
+  "MemoryCardEditorDialog", "All Memory Card Types (*.mcd *.mcr *.mc *.srm *.psm *.ps *.ddf *.mem *.vgs *.psx)");
 static constexpr char MEMORY_CARD_IMPORT_FILTER[] =
   QT_TRANSLATE_NOOP("MemoryCardEditorDialog", "All Importable Memory Card Types (*.mcd *.mcr *.mc *.gme)");
 static constexpr char SINGLE_SAVEFILE_FILTER[] =
@@ -150,13 +152,12 @@ void MemoryCardEditorDialog::populateComboBox(QComboBox* cb)
 
   cb->addItem(QString());
 
-  const std::string base_path(g_host_interface->GetUserDirectoryRelativePath("memcards"));
   FileSystem::FindResultsArray results;
-  FileSystem::FindFiles(base_path.c_str(), "*.mcd", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RELATIVE_PATHS, &results);
+  FileSystem::FindFiles(EmuFolders::MemoryCards.c_str(), "*.mcd",
+                        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RELATIVE_PATHS, &results);
   for (FILESYSTEM_FIND_DATA& fd : results)
   {
-    std::string real_filename(
-      StringUtil::StdStringFromFormat("%s" FS_OSPATH_SEPARATOR_STR "%s", base_path.c_str(), fd.FileName.c_str()));
+    std::string real_filename(Path::Combine(EmuFolders::MemoryCards, fd.FileName));
     std::string::size_type pos = fd.FileName.rfind('.');
     if (pos != std::string::npos)
       fd.FileName.erase(pos);

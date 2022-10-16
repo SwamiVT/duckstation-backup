@@ -1,14 +1,9 @@
-// Copyright 2016 Dolphin Emulator Project
-// Copyright 2020 DuckStation Emulator Project
-// Licensed under GPLv2+
-// Refer to the LICENSE file included.
-
 #pragma once
 
 #include "../types.h"
 #include "../window_info.h"
 #include "texture.h"
-#include "vulkan_loader.h"
+#include "loader.h"
 #include <memory>
 #include <vector>
 

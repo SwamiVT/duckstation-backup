@@ -1,51 +1,43 @@
 add_library(frontend-common
-  common_host_interface.cpp
-  common_host_interface.h
-  controller_interface.cpp
-  controller_interface.h
-  cubeb_audio_stream.cpp
-  cubeb_audio_stream.h
+  achievements.cpp
+  achievements.h
+  common_host.cpp
+  common_host.h
   fullscreen_ui.cpp
   fullscreen_ui.h
-  fullscreen_ui_progress_callback.cpp
-  fullscreen_ui_progress_callback.h
-  game_database.cpp
-  game_database.h
   game_list.cpp
   game_list.h
-  game_settings.cpp
-  game_settings.h
+  host_settings.cpp
   icon.cpp
   icon.h
-  inhibit_screensaver.cpp
-  inhibit_screensaver.h
-  ini_settings_interface.cpp
-  ini_settings_interface.h
-  input_overlay_ui.cpp
-  input_overlay_ui.h
+  input_manager.cpp
+  input_manager.h
+  input_source.cpp
+  input_source.h
   imgui_fullscreen.cpp
   imgui_fullscreen.h
-  imgui_impl_opengl3.cpp
-  imgui_impl_opengl3.h
-  imgui_impl_vulkan.cpp
-  imgui_impl_vulkan.h
-  imgui_styles.cpp
-  imgui_styles.h  
-  opengl_host_display.cpp
-  opengl_host_display.h
+  imgui_manager.cpp
+  imgui_manager.h
+  imgui_overlays.cpp
+  imgui_overlays.h
+  platform_misc.h
   postprocessing_chain.cpp
   postprocessing_chain.h
   postprocessing_shader.cpp
   postprocessing_shader.h
   postprocessing_shadergen.cpp
   postprocessing_shadergen.h
-  save_state_selector_ui.cpp
-  save_state_selector_ui.h
-  vulkan_host_display.cpp
-  vulkan_host_display.h
 )
 
-target_link_libraries(frontend-common PUBLIC core common glad vulkan-loader cubeb imgui simpleini tinyxml2 rapidjson scmversion)
+target_link_libraries(frontend-common PUBLIC core common imgui tinyxml2 rapidjson scmversion)
+
+if(ENABLE_CUBEB)
+  target_sources(frontend-common PRIVATE
+    cubeb_audio_stream.cpp
+    cubeb_audio_stream.h
+  )
+  target_link_libraries(frontend-common PRIVATE cubeb)
+endif()
 
 if(WIN32)
   target_sources(frontend-common PRIVATE
@@ -53,33 +45,62 @@ if(WIN32)
     d3d11_host_display.h
     d3d12_host_display.cpp
     d3d12_host_display.h
-    dinput_controller_interface.cpp
-    dinput_controller_interface.h
+    dinput_source.cpp
+    dinput_source.h
     imgui_impl_dx11.cpp
     imgui_impl_dx11.h
     imgui_impl_dx12.cpp
     imgui_impl_dx12.h
+    win32_raw_input_source.cpp
+    win32_raw_input_source.h
     xaudio2_audio_stream.cpp
     xaudio2_audio_stream.h
-    xinput_controller_interface.cpp
-    xinput_controller_interface.h
+    xinput_source.cpp
+    xinput_source.h
   )
   target_link_libraries(frontend-common PRIVATE d3d11.lib dxgi.lib)
 endif()
 
-if(APPLE)
+if(ENABLE_OPENGL)
+  target_sources(frontend-common PRIVATE
+    opengl_host_display.cpp
+    opengl_host_display.h
+    imgui_impl_opengl3.cpp
+    imgui_impl_opengl3.h
+  )
+  target_link_libraries(frontend-common PRIVATE glad)
+endif()
+
+if(ENABLE_VULKAN)
+  target_sources(frontend-common PRIVATE
+    imgui_impl_vulkan.cpp
+    imgui_impl_vulkan.h
+    vulkan_host_display.cpp
+    vulkan_host_display.h
+  )
+endif()
+
+if(WIN32)
+  target_sources(frontend-common PRIVATE
+    platform_misc_win32.cpp
+  )
+  target_link_libraries(frontend-common PRIVATE winmm.lib)
+elseif(APPLE)
   find_library(IOK_LIBRARY IOKit REQUIRED)
   target_link_libraries(frontend-common PRIVATE "${IOK_LIBRARY}")
+  target_sources(frontend-common PRIVATE
+    platform_misc_mac.mm
+  )
+elseif(NOT ANDROID)
+  target_sources(frontend-common PRIVATE
+    platform_misc_unix.cpp
+  )
 endif()
 
 if(SDL2_FOUND)
   target_sources(frontend-common PRIVATE 
-    sdl_audio_stream.cpp
-    sdl_audio_stream.h
-    sdl_controller_interface.cpp
-    sdl_controller_interface.h
-    sdl_initializer.cpp
-    sdl_initializer.h
+    sdl_input_source.cpp
+    sdl_input_source.h
   )
   target_compile_definitions(frontend-common PUBLIC "WITH_SDL2=1")
   target_include_directories(frontend-common PRIVATE ${SDL2_INCLUDE_DIRS})
@@ -97,8 +118,8 @@ if(USE_EVDEV)
   target_include_directories(frontend-common PRIVATE ${LIBEVDEV_INCLUDE_DIRS})
   target_link_libraries(frontend-common PRIVATE ${LIBEVDEV_LIBRARIES})
   target_sources(frontend-common PRIVATE
-    evdev_controller_interface.cpp
-    evdev_controller_interface.h
+    evdev_input_source.cpp
+    evdev_input_source.h
   )
 endif()
 
@@ -114,27 +135,8 @@ endif()
 
 if(ENABLE_CHEEVOS)
   target_sources(frontend-common PRIVATE
-    http_downloader.cpp
-    http_downloader.h
-  )
-  if(WIN32)
-    target_sources(frontend-common PRIVATE
-      http_downloader_winhttp.cpp
-      http_downloader_winhttp.h
-    )
-  elseif(NOT ANDROID)
-    target_sources(frontend-common PRIVATE
-      http_downloader_curl.cpp
-      http_downloader_curl.h
-    )
-    target_link_libraries(frontend-common PRIVATE
-      CURL::libcurl
-    )
-  endif()
-
-  target_sources(frontend-common PRIVATE
-    cheevos.cpp
-    cheevos.h
+    achievements.cpp
+    achievements.h
   )
   target_compile_definitions(frontend-common PUBLIC -DWITH_CHEEVOS=1)
   target_link_libraries(frontend-common PRIVATE rcheevos rapidjson)

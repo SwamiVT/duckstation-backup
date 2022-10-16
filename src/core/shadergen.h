@@ -7,7 +7,7 @@
 class ShaderGen
 {
 public:
-  ShaderGen(HostDisplay::RenderAPI render_api, bool supports_dual_source_blend);
+  ShaderGen(RenderAPI render_api, bool supports_dual_source_blend);
   ~ShaderGen();
 
   static bool UseGLSLBindingLayout();
@@ -19,12 +19,15 @@ public:
   std::string GenerateSampleFragmentShader();
 
 protected:
-  ALWAYS_INLINE bool IsVulkan() const { return (m_render_api == HostDisplay::RenderAPI::Vulkan); }
+  ALWAYS_INLINE bool IsVulkan() const { return (m_render_api == RenderAPI::Vulkan); }
 
   const char* GetInterpolationQualifier(bool interface_block, bool centroid_interpolation, bool sample_interpolation,
                                         bool is_out) const;
 
+#ifdef WITH_OPENGL
   void SetGLSLVersionString();
+#endif
+
   void DefineMacro(std::stringstream& ss, const char* name, bool enabled);
   void WriteHeader(std::stringstream& ss);
   void WriteUniformBufferDeclaration(std::stringstream& ss, bool push_constant_on_vulkan);
@@ -36,13 +39,14 @@ protected:
                                u32 num_color_outputs, u32 num_texcoord_outputs,
                                const std::initializer_list<std::pair<const char*, const char*>>& additional_outputs,
                                bool declare_vertex_id = false, const char* output_block_suffix = "", bool msaa = false,
-                               bool ssaa = false);
+                               bool ssaa = false, bool noperspective_color = false);
   void DeclareFragmentEntryPoint(std::stringstream& ss, u32 num_color_inputs, u32 num_texcoord_inputs,
                                  const std::initializer_list<std::pair<const char*, const char*>>& additional_inputs,
                                  bool declare_fragcoord = false, u32 num_color_outputs = 1, bool depth_output = false,
-                                 bool msaa = false, bool ssaa = false, bool declare_sample_id = false);
+                                 bool msaa = false, bool ssaa = false, bool declare_sample_id = false,
+                                 bool noperspective_color = false);
 
-  HostDisplay::RenderAPI m_render_api;
+  RenderAPI m_render_api;
   bool m_glsl;
   bool m_supports_dual_source_blend;
   bool m_use_glsl_interface_blocks;

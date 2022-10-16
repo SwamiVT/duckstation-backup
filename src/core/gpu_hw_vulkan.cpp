@@ -1,8 +1,7 @@
 #include "gpu_hw_vulkan.h"
 #include "common/assert.h"
 #include "common/log.h"
-#include "common/scope_guard.h"
-#include "common/state_wrapper.h"
+#include "common/scoped_guard.h"
 #include "common/timer.h"
 #include "common/vulkan/builders.h"
 #include "common/vulkan/context.h"
@@ -10,17 +9,17 @@
 #include "common/vulkan/util.h"
 #include "gpu_hw_shadergen.h"
 #include "host_display.h"
-#include "host_interface.h"
 #include "system.h"
+#include "util/state_wrapper.h"
 Log_SetChannel(GPU_HW_Vulkan);
 
 GPU_HW_Vulkan::GPU_HW_Vulkan() = default;
 
 GPU_HW_Vulkan::~GPU_HW_Vulkan()
 {
-  if (m_host_display)
+  if (g_host_display)
   {
-    m_host_display->ClearDisplayTexture();
+    g_host_display->ClearDisplayTexture();
     ResetGraphicsAPIState();
   }
 
@@ -32,9 +31,9 @@ GPURenderer GPU_HW_Vulkan::GetRendererType() const
   return GPURenderer::HardwareVulkan;
 }
 
-bool GPU_HW_Vulkan::Initialize(HostDisplay* host_display)
+bool GPU_HW_Vulkan::Initialize()
 {
-  if (host_display->GetRenderAPI() != HostDisplay::RenderAPI::Vulkan)
+  if (!Host::AcquireHostDisplay(RenderAPI::Vulkan))
   {
     Log_ErrorPrintf("Host render API is incompatible");
     return false;
@@ -43,7 +42,7 @@ bool GPU_HW_Vulkan::Initialize(HostDisplay* host_display)
   Assert(g_vulkan_shader_cache);
   SetCapabilities();
 
-  if (!GPU_HW::Initialize(host_display))
+  if (!GPU_HW::Initialize())
     return false;
 
   if (!CreatePipelineLayouts())
@@ -103,7 +102,7 @@ void GPU_HW_Vulkan::Reset(bool clear_vram)
     ClearFramebuffer();
 }
 
-bool GPU_HW_Vulkan::DoState(StateWrapper& sw, HostDisplayTexture** host_texture, bool update_display)
+bool GPU_HW_Vulkan::DoState(StateWrapper& sw, GPUTexture** host_texture, bool update_display)
 {
   if (host_texture)
   {
@@ -120,7 +119,7 @@ bool GPU_HW_Vulkan::DoState(StateWrapper& sw, HostDisplayTexture** host_texture,
 
     if (sw.IsReading())
     {
-      Vulkan::Texture* tex = static_cast<Vulkan::Texture*>((*host_texture)->GetHandle());
+      Vulkan::Texture* tex = static_cast<Vulkan::Texture*>(*host_texture);
       if (tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
           tex->GetSamples() != m_vram_texture.GetSamples())
       {
@@ -138,22 +137,22 @@ bool GPU_HW_Vulkan::DoState(StateWrapper& sw, HostDisplayTexture** host_texture,
     }
     else
     {
-      HostDisplayTexture* htex = *host_texture;
-      if (!htex || htex->GetWidth() != m_vram_texture.GetWidth() || htex->GetHeight() != m_vram_texture.GetHeight() ||
-          htex->GetSamples() != static_cast<u32>(m_vram_texture.GetSamples()))
+      Vulkan::Texture* tex = static_cast<Vulkan::Texture*>(*host_texture);
+      if (!tex || tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
+          tex->GetSamples() != static_cast<u32>(m_vram_texture.GetSamples()))
       {
-        delete htex;
+        delete tex;
 
-        htex = m_host_display
-                 ->CreateTexture(m_vram_texture.GetWidth(), m_vram_texture.GetHeight(), 1, 1,
-                                 m_vram_texture.GetSamples(), HostDisplayPixelFormat::RGBA8, nullptr, 0, false)
-                 .release();
-        *host_texture = htex;
-        if (!htex)
+        tex = static_cast<Vulkan::Texture*>(g_host_display
+                                              ->CreateTexture(m_vram_texture.GetWidth(), m_vram_texture.GetHeight(), 1,
+                                                              1, m_vram_texture.GetSamples(), GPUTexture::Format::RGBA8,
+                                                              nullptr, 0, false)
+                                              .release());
+        *host_texture = tex;
+        if (!tex)
           return false;
       }
 
-      Vulkan::Texture* tex = static_cast<Vulkan::Texture*>(htex->GetHandle());
       if (tex->GetWidth() != m_vram_texture.GetWidth() || tex->GetHeight() != m_vram_texture.GetHeight() ||
           tex->GetSamples() != m_vram_texture.GetSamples())
       {
@@ -179,7 +178,7 @@ void GPU_HW_Vulkan::ResetGraphicsAPIState()
 
   EndRenderPass();
 
-  if (m_host_display->GetDisplayTextureHandle() == &m_vram_texture)
+  if (g_host_display->GetDisplayTextureHandle() == &m_vram_texture)
   {
     m_vram_texture.TransitionToLayout(g_vulkan_context->GetCurrentCommandBuffer(),
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -218,7 +217,7 @@ void GPU_HW_Vulkan::UpdateSettings()
   }
 
   // Everything should be finished executing before recreating resources.
-  m_host_display->ClearDisplayTexture();
+  g_host_display->ClearDisplayTexture();
   g_vulkan_context->ExecuteCommandBuffer(true);
 
   if (framebuffer_changed)
@@ -255,7 +254,7 @@ void GPU_HW_Vulkan::MapBatchVertexPointer(u32 required_vertices)
       Panic("Failed to reserve vertex stream buffer memory");
   }
 
-  m_batch_start_vertex_ptr = static_cast<BatchVertex*>(m_vertex_stream_buffer.GetCurrentHostPointer());
+  m_batch_start_vertex_ptr = reinterpret_cast<BatchVertex*>(m_vertex_stream_buffer.GetCurrentHostPointer());
   m_batch_current_vertex_ptr = m_batch_start_vertex_ptr;
   m_batch_end_vertex_ptr = m_batch_start_vertex_ptr + (m_vertex_stream_buffer.GetCurrentSpace() / sizeof(BatchVertex));
   m_batch_base_vertex = m_vertex_stream_buffer.GetCurrentOffset() / sizeof(BatchVertex);
@@ -328,6 +327,7 @@ void GPU_HW_Vulkan::SetCapabilities()
   m_supports_dual_source_blend = g_vulkan_context->GetDeviceFeatures().dualSrcBlend;
   m_supports_per_sample_shading = g_vulkan_context->GetDeviceFeatures().sampleRateShading;
   m_supports_adaptive_downsampling = true;
+  m_supports_disable_color_perspective = true;
 
   Log_InfoPrintf("Dual-source blend: %s", m_supports_dual_source_blend ? "supported" : "not supported");
   Log_InfoPrintf("Per-sample shading: %s", m_supports_per_sample_shading ? "supported" : "not supported");
@@ -521,7 +521,7 @@ bool GPU_HW_Vulkan::CreateSamplers()
   VkDevice device = g_vulkan_context->GetDevice();
 
   Vulkan::SamplerBuilder sbuilder;
-  sbuilder.SetPointSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+  sbuilder.SetPointSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
   sbuilder.SetAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
                           VK_SAMPLER_ADDRESS_MODE_REPEAT);
   m_point_sampler = sbuilder.Create(device);
@@ -529,7 +529,7 @@ bool GPU_HW_Vulkan::CreateSamplers()
     return false;
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_point_sampler, "Point Sampler");
 
-  sbuilder.SetLinearSampler(false, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+  sbuilder.SetLinearSampler(false, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
   sbuilder.SetAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
                           VK_SAMPLER_ADDRESS_MODE_REPEAT);
   m_linear_sampler = sbuilder.Create(device);
@@ -537,7 +537,7 @@ bool GPU_HW_Vulkan::CreateSamplers()
     return false;
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_linear_sampler, "Linear Sampler");
 
-  sbuilder.SetLinearSampler(true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+  sbuilder.SetLinearSampler(true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
   m_trilinear_sampler = sbuilder.Create(device);
   if (m_trilinear_sampler == VK_NULL_HANDLE)
     return false;
@@ -560,52 +560,52 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
   if (!m_vram_texture.Create(texture_width, texture_height, 1, 1, texture_format, samples, VK_IMAGE_VIEW_TYPE_2D,
                              VK_IMAGE_TILING_OPTIMAL,
                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                             true) ||
       !m_vram_depth_texture.Create(texture_width, texture_height, 1, 1, depth_format, samples, VK_IMAGE_VIEW_TYPE_2D,
                                    VK_IMAGE_TILING_OPTIMAL,
                                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
       !m_vram_read_texture.Create(texture_width, texture_height, 1, 1, texture_format, VK_SAMPLE_COUNT_1_BIT,
                                   VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-                                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+                                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true) ||
       !m_display_texture.Create(
         ((m_downsample_mode == GPUDownsampleMode::Adaptive) ? VRAM_WIDTH : GPU_MAX_DISPLAY_WIDTH) * m_resolution_scale,
         GPU_MAX_DISPLAY_HEIGHT * m_resolution_scale, 1, 1, texture_format, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
         VK_IMAGE_TILING_OPTIMAL,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-          VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        true) ||
       !m_vram_readback_texture.Create(VRAM_WIDTH, VRAM_HEIGHT, 1, 1, texture_format, VK_SAMPLE_COUNT_1_BIT,
                                       VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
-      !m_vram_readback_staging_texture.Create(Vulkan::StagingBuffer::Type::Readback, texture_format, VRAM_WIDTH / 2,
-                                              VRAM_HEIGHT))
+                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true))
   {
     return false;
   }
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_texture.GetImage(), "VRAM Texture");
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_texture.GetView(), "VRAM Texture View");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_texture.GetDeviceMemory(), "VRAM Texture Memory");
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_texture.GetAllocation(), "VRAM Texture Memory");
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_depth_texture.GetImage(), "VRAM Depth Texture");
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_depth_texture.GetView(), "VRAM Depth Texture View");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_depth_texture.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_depth_texture.GetAllocation(),
                               "VRAM Depth Texture Memory");
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_read_texture.GetImage(), "VRAM Read Texture");
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_read_texture.GetView(), "VRAM Read Texture View");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_read_texture.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_read_texture.GetAllocation(),
                               "VRAM Read Texture Memory");
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_display_texture.GetImage(), "Display Texture");
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_display_texture.GetView(), "Display Texture View");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_display_texture.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_display_texture.GetAllocation(),
                               "Display Texture Memory");
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_readback_texture.GetImage(),
                               "VRAM Readback Texture");
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_readback_texture.GetView(),
                               "VRAM Readback Texture View");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_readback_texture.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_readback_texture.GetAllocation(),
                               "VRAM Readback Texture Memory");
 
   m_vram_render_pass =
@@ -613,13 +613,13 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
   m_vram_update_depth_render_pass =
     g_vulkan_context->GetRenderPass(VK_FORMAT_UNDEFINED, depth_format, samples, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
   m_display_load_render_pass = g_vulkan_context->GetRenderPass(
-    m_display_texture.GetFormat(), VK_FORMAT_UNDEFINED, m_display_texture.GetSamples(), VK_ATTACHMENT_LOAD_OP_LOAD);
+    m_display_texture.GetVkFormat(), VK_FORMAT_UNDEFINED, m_display_texture.GetVkSamples(), VK_ATTACHMENT_LOAD_OP_LOAD);
   m_display_discard_render_pass =
-    g_vulkan_context->GetRenderPass(m_display_texture.GetFormat(), VK_FORMAT_UNDEFINED, m_display_texture.GetSamples(),
-                                    VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    g_vulkan_context->GetRenderPass(m_display_texture.GetVkFormat(), VK_FORMAT_UNDEFINED,
+                                    m_display_texture.GetVkSamples(), VK_ATTACHMENT_LOAD_OP_DONT_CARE);
   m_vram_readback_render_pass =
-    g_vulkan_context->GetRenderPass(m_vram_readback_texture.GetFormat(), VK_FORMAT_UNDEFINED,
-                                    m_vram_readback_texture.GetSamples(), VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    g_vulkan_context->GetRenderPass(m_vram_readback_texture.GetVkFormat(), VK_FORMAT_UNDEFINED,
+                                    m_vram_readback_texture.GetVkSamples(), VK_ATTACHMENT_LOAD_OP_DONT_CARE);
 
   if (m_vram_render_pass == VK_NULL_HANDLE || m_vram_update_depth_render_pass == VK_NULL_HANDLE ||
       m_display_load_render_pass == VK_NULL_HANDLE || m_vram_readback_render_pass == VK_NULL_HANDLE)
@@ -705,10 +705,11 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
 
     m_downsample_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    m_downsample_render_pass = g_vulkan_context->GetRenderPass(m_downsample_texture.GetFormat(), VK_FORMAT_UNDEFINED,
+    m_downsample_render_pass = g_vulkan_context->GetRenderPass(m_downsample_texture.GetVkFormat(), VK_FORMAT_UNDEFINED,
                                                                VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR);
-    m_downsample_weight_render_pass = g_vulkan_context->GetRenderPass(
-      m_downsample_weight_texture.GetFormat(), VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR);
+    m_downsample_weight_render_pass =
+      g_vulkan_context->GetRenderPass(m_downsample_weight_texture.GetVkFormat(), VK_FORMAT_UNDEFINED,
+                                      VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR);
     if (m_downsample_render_pass == VK_NULL_HANDLE || m_downsample_weight_render_pass == VK_NULL_HANDLE)
       return false;
 
@@ -726,7 +727,7 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
                                          0,
                                          m_downsample_texture.GetImage(),
                                          VK_IMAGE_VIEW_TYPE_2D,
-                                         m_downsample_texture.GetFormat(),
+                                         m_downsample_texture.GetVkFormat(),
                                          {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                           VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
                                          {VK_IMAGE_ASPECT_COLOR_BIT, i, 1u, 0u, 1u}};
@@ -777,7 +778,7 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
       return false;
     }
 
-    m_downsample_render_pass = g_vulkan_context->GetRenderPass(m_downsample_texture.GetFormat(), VK_FORMAT_UNDEFINED,
+    m_downsample_render_pass = g_vulkan_context->GetRenderPass(m_downsample_texture.GetVkFormat(), VK_FORMAT_UNDEFINED,
                                                                VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR);
 
     m_downsample_mip_views.resize(1);
@@ -799,7 +800,7 @@ void GPU_HW_Vulkan::ClearFramebuffer()
   m_vram_depth_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
   static constexpr VkClearColorValue cc = {};
-  const VkClearDepthStencilValue cds = {m_pgxp_depth_buffer ? 1.0f : 0.0f};
+  const VkClearDepthStencilValue cds = {m_pgxp_depth_buffer ? 1.0f : 0.0f, 0u};
   static constexpr VkImageSubresourceRange csrr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
   static constexpr VkImageSubresourceRange dsrr = {VK_IMAGE_ASPECT_DEPTH_BIT, 0u, 1u, 0u, 1u};
   vkCmdClearColorImage(cmdbuf, m_vram_texture.GetImage(), m_vram_texture.GetLayout(), &cc, 1u, &csrr);
@@ -843,7 +844,6 @@ void GPU_HW_Vulkan::DestroyFramebuffer()
   m_vram_texture.Destroy(false);
   m_vram_readback_texture.Destroy(false);
   m_display_texture.Destroy(false);
-  m_vram_readback_staging_texture.Destroy(false);
 }
 
 bool GPU_HW_Vulkan::CreateVertexBuffer()
@@ -853,7 +853,7 @@ bool GPU_HW_Vulkan::CreateVertexBuffer()
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vertex_stream_buffer.GetBuffer(),
                               "Vertex Stream Buffer");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vertex_stream_buffer.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vertex_stream_buffer.GetAllocation(),
                               "Vertex Stream Buffer Memory");
   return true;
 }
@@ -865,7 +865,7 @@ bool GPU_HW_Vulkan::CreateUniformBuffer()
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_uniform_stream_buffer.GetBuffer(),
                               "Uniform Stream Buffer");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_uniform_stream_buffer.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_uniform_stream_buffer.GetAllocation(),
                               "Uniform Stream Buffer Memory");
   return true;
 }
@@ -910,7 +910,7 @@ bool GPU_HW_Vulkan::CreateTextureBuffer()
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_texture_stream_buffer.GetBuffer(),
                               "Texture Stream Buffer");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_texture_stream_buffer.GetDeviceMemory(),
+  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_texture_stream_buffer.GetAllocation(),
                               "Texture Stream Buffer Memory");
 
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_vram_write_descriptor_set, "VRAM Write Descriptor Set");
@@ -923,9 +923,9 @@ bool GPU_HW_Vulkan::CompilePipelines()
   VkDevice device = g_vulkan_context->GetDevice();
   VkPipelineCache pipeline_cache = g_vulkan_shader_cache->GetPipelineCache();
 
-  GPU_HW_ShaderGen shadergen(m_host_display->GetRenderAPI(), m_resolution_scale, m_multisamples, m_per_sample_shading,
+  GPU_HW_ShaderGen shadergen(g_host_display->GetRenderAPI(), m_resolution_scale, m_multisamples, m_per_sample_shading,
                              m_true_color, m_scaled_dithering, m_texture_filtering, m_using_uv_limits,
-                             m_pgxp_depth_buffer, m_supports_dual_source_blend);
+                             m_pgxp_depth_buffer, m_disable_color_perspective, m_supports_dual_source_blend);
 
   ShaderCompileProgressTracker progress("Compiling Pipelines", 2 + (4 * 9 * 2 * 2) + (3 * 4 * 5 * 9 * 2 * 2) + 1 + 2 +
                                                                  (2 * 2) + 2 + 1 + 1 + (2 * 3) + 1);
@@ -934,7 +934,7 @@ bool GPU_HW_Vulkan::CompilePipelines()
   // fragment shaders - [render_mode][texture_mode][dithering][interlacing]
   DimensionalArray<VkShaderModule, 2> batch_vertex_shaders{};
   DimensionalArray<VkShaderModule, 2, 2, 9, 4> batch_fragment_shaders{};
-  Common::ScopeGuard batch_shader_guard([&batch_vertex_shaders, &batch_fragment_shaders]() {
+  ScopedGuard batch_shader_guard([&batch_vertex_shaders, &batch_fragment_shaders]() {
     batch_vertex_shaders.enumerate(Vulkan::Util::SafeDestroyShaderModule);
     batch_fragment_shaders.enumerate(Vulkan::Util::SafeDestroyShaderModule);
   });
@@ -1067,7 +1067,7 @@ bool GPU_HW_Vulkan::CompilePipelines()
     }
   }
 
-  batch_shader_guard.Exit();
+  batch_shader_guard.Invoke();
 
   VkShaderModule fullscreen_quad_vertex_shader =
     g_vulkan_shader_cache->GetVertexShader(shadergen.GenerateScreenQuadVertexShader());
@@ -1082,7 +1082,7 @@ bool GPU_HW_Vulkan::CompilePipelines()
 
   progress.Increment();
 
-  Common::ScopeGuard fullscreen_quad_vertex_shader_guard([&fullscreen_quad_vertex_shader, &uv_quad_vertex_shader]() {
+  ScopedGuard fullscreen_quad_vertex_shader_guard([&fullscreen_quad_vertex_shader, &uv_quad_vertex_shader]() {
     vkDestroyShaderModule(g_vulkan_context->GetDevice(), fullscreen_quad_vertex_shader, nullptr);
     vkDestroyShaderModule(g_vulkan_context->GetDevice(), uv_quad_vertex_shader, nullptr);
   });
@@ -1405,7 +1405,7 @@ void GPU_HW_Vulkan::ClearDisplay()
   GPU_HW::ClearDisplay();
   EndRenderPass();
 
-  m_host_display->ClearDisplayTexture();
+  g_host_display->ClearDisplayTexture();
 
   VkCommandBuffer cmdbuf = g_vulkan_context->GetCurrentCommandBuffer();
   const Vulkan::Util::DebugScope debugScope(cmdbuf, "GPU_HW_Vulkan::ClearDisplay");
@@ -1435,22 +1435,19 @@ void GPU_HW_Vulkan::UpdateDisplay()
         UpdateVRAMReadTexture();
       }
 
-      m_host_display->SetDisplayTexture(&m_vram_read_texture, HostDisplayPixelFormat::RGBA8,
-                                        m_vram_read_texture.GetWidth(), m_vram_read_texture.GetHeight(), 0, 0,
-                                        m_vram_read_texture.GetWidth(), m_vram_read_texture.GetHeight());
+      g_host_display->SetDisplayTexture(&m_vram_read_texture, 0, 0, m_vram_read_texture.GetWidth(),
+                                        m_vram_read_texture.GetHeight());
     }
     else
     {
-      m_host_display->SetDisplayTexture(&m_vram_texture, HostDisplayPixelFormat::RGBA8, m_vram_texture.GetWidth(),
-                                        m_vram_texture.GetHeight(), 0, 0, m_vram_texture.GetWidth(),
-                                        m_vram_texture.GetHeight());
+      g_host_display->SetDisplayTexture(&m_vram_texture, 0, 0, m_vram_texture.GetWidth(), m_vram_texture.GetHeight());
     }
-    m_host_display->SetDisplayParameters(VRAM_WIDTH, VRAM_HEIGHT, 0, 0, VRAM_WIDTH, VRAM_HEIGHT,
+    g_host_display->SetDisplayParameters(VRAM_WIDTH, VRAM_HEIGHT, 0, 0, VRAM_WIDTH, VRAM_HEIGHT,
                                          static_cast<float>(VRAM_WIDTH) / static_cast<float>(VRAM_HEIGHT));
   }
   else
   {
-    m_host_display->SetDisplayParameters(m_crtc_state.display_width, m_crtc_state.display_height,
+    g_host_display->SetDisplayParameters(m_crtc_state.display_width, m_crtc_state.display_height,
                                          m_crtc_state.display_origin_left, m_crtc_state.display_origin_top,
                                          m_crtc_state.display_vram_width, m_crtc_state.display_vram_height,
                                          GetDisplayAspectRatio());
@@ -1468,7 +1465,7 @@ void GPU_HW_Vulkan::UpdateDisplay()
 
     if (IsDisplayDisabled())
     {
-      m_host_display->ClearDisplayTexture();
+      g_host_display->ClearDisplayTexture();
     }
     else if (!m_GPUSTAT.display_area_color_depth_24 && interlaced == InterlacedRenderMode::None &&
              !IsUsingMultisampling() && (scaled_vram_offset_x + scaled_display_width) <= m_vram_texture.GetWidth() &&
@@ -1481,8 +1478,7 @@ void GPU_HW_Vulkan::UpdateDisplay()
       }
       else
       {
-        m_host_display->SetDisplayTexture(&m_vram_texture, HostDisplayPixelFormat::RGBA8, m_vram_texture.GetWidth(),
-                                          m_vram_texture.GetHeight(), scaled_vram_offset_x, scaled_vram_offset_y,
+        g_host_display->SetDisplayTexture(&m_vram_texture, scaled_vram_offset_x, scaled_vram_offset_y,
                                           scaled_display_width, scaled_display_height);
       }
     }
@@ -1528,9 +1524,7 @@ void GPU_HW_Vulkan::UpdateDisplay()
       }
       else
       {
-        m_host_display->SetDisplayTexture(&m_display_texture, HostDisplayPixelFormat::RGBA8,
-                                          m_display_texture.GetWidth(), m_display_texture.GetHeight(), 0, 0,
-                                          scaled_display_width, scaled_display_height);
+        g_host_display->SetDisplayTexture(&m_display_texture, 0, 0, scaled_display_width, scaled_display_height);
         RestoreGraphicsAPIState();
       }
     }
@@ -1578,15 +1572,12 @@ void GPU_HW_Vulkan::ReadVRAM(u32 x, u32 y, u32 width, u32 height)
   m_vram_readback_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   m_vram_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-  // Stage the readback.
-  m_vram_readback_staging_texture.CopyFromTexture(m_vram_readback_texture, 0, 0, 0, 0, 0, 0, encoded_width,
-                                                  encoded_height);
+  // Stage the readback and copy it into our shadow buffer (will execute command buffer and stall).
+  g_host_display->DownloadTexture(&m_vram_readback_texture, 0, 0, encoded_width, encoded_height,
+                                  &m_vram_shadow[copy_rect.top * VRAM_WIDTH + copy_rect.left],
+                                  VRAM_WIDTH * sizeof(u16));
 
-  // And copy it into our shadow buffer (will execute command buffer and stall).
-  ExecuteCommandBuffer(true, true);
-  m_vram_readback_staging_texture.ReadTexels(0, 0, encoded_width, encoded_height,
-                                             &m_vram_shadow[copy_rect.top * VRAM_WIDTH + copy_rect.left],
-                                             VRAM_WIDTH * sizeof(u16));
+  RestoreGraphicsAPIState();
 }
 
 void GPU_HW_Vulkan::FillVRAM(u32 x, u32 y, u32 width, u32 height, u32 color)
@@ -1819,34 +1810,12 @@ void GPU_HW_Vulkan::ClearDepthBuffer()
   m_last_depth_z = 1.0f;
 }
 
-bool GPU_HW_Vulkan::CreateTextureReplacementStreamBuffer()
-{
-  if (m_texture_replacment_stream_buffer.IsValid())
-    return true;
-
-  if (!m_texture_replacment_stream_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_REPLACEMENT_BUFFER_SIZE))
-  {
-    Log_ErrorPrint("Failed to allocate texture replacement streaming buffer");
-    return false;
-  }
-
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_texture_replacment_stream_buffer.GetBuffer(),
-                              "Texture Replacement Stream Buffer");
-  Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_texture_replacment_stream_buffer.GetDeviceMemory(),
-                              "Texture Replacement Stream Buffer Memory");
-
-  return true;
-}
-
 bool GPU_HW_Vulkan::BlitVRAMReplacementTexture(const TextureReplacementTexture* tex, u32 dst_x, u32 dst_y, u32 width,
                                                u32 height)
 {
   VkCommandBuffer cmdbuf = g_vulkan_context->GetCurrentCommandBuffer();
   const Vulkan::Util::DebugScope debugScope(cmdbuf, "GPU_HW_Vulkan::BlitVRAMReplacementTexture: {%u,%u} %ux%u", dst_x,
                                             dst_y, width, height);
-  if (!CreateTextureReplacementStreamBuffer())
-    return false;
-
   if (m_vram_write_replacement_texture.GetWidth() < tex->GetWidth() ||
       m_vram_write_replacement_texture.GetHeight() < tex->GetHeight())
   {
@@ -1859,27 +1828,8 @@ bool GPU_HW_Vulkan::BlitVRAMReplacementTexture(const TextureReplacementTexture* 
     }
   }
 
-  const u32 required_size = tex->GetWidth() * tex->GetHeight() * sizeof(u32);
-  const u32 alignment = static_cast<u32>(g_vulkan_context->GetBufferImageGranularity());
-  if (!m_texture_replacment_stream_buffer.ReserveMemory(required_size, alignment))
-  {
-    Log_PerfPrint("Executing command buffer while waiting for texture replacement buffer space");
-    ExecuteCommandBuffer(false, true);
-    if (!m_texture_replacment_stream_buffer.ReserveMemory(required_size, alignment))
-    {
-      Log_ErrorPrintf("Failed to allocate %u bytes from texture replacement streaming buffer", required_size);
-      return false;
-    }
-  }
-
-  // upload to buffer
-  const u32 buffer_offset = m_texture_replacment_stream_buffer.GetCurrentOffset();
-  std::memcpy(m_texture_replacment_stream_buffer.GetCurrentHostPointer(), tex->GetPixels(), required_size);
-  m_texture_replacment_stream_buffer.CommitMemory(required_size);
-
-  // buffer -> texture
-  m_vram_write_replacement_texture.UpdateFromBuffer(cmdbuf, 0, 0, 0, 0, tex->GetWidth(), tex->GetHeight(),
-                                                    m_texture_replacment_stream_buffer.GetBuffer(), buffer_offset);
+  m_vram_write_replacement_texture.Update(0, 0, tex->GetWidth(), tex->GetHeight(), 0, 0, tex->GetPixels(),
+                                          tex->GetPitch());
 
   // texture -> vram
   const VkImageBlit blit = {
@@ -1938,9 +1888,7 @@ void GPU_HW_Vulkan::DownsampleFramebufferBoxFilter(Vulkan::Texture& source, u32 
 
   RestoreGraphicsAPIState();
 
-  m_host_display->SetDisplayTexture(&m_downsample_texture, HostDisplayPixelFormat::RGBA8,
-                                    m_downsample_texture.GetWidth(), m_downsample_texture.GetHeight(), ds_left, ds_top,
-                                    ds_width, ds_height);
+  g_host_display->SetDisplayTexture(&m_downsample_texture, ds_left, ds_top, ds_width, ds_height);
 }
 
 void GPU_HW_Vulkan::DownsampleFramebufferAdaptive(Vulkan::Texture& source, u32 left, u32 top, u32 width, u32 height)
@@ -2037,8 +1985,7 @@ void GPU_HW_Vulkan::DownsampleFramebufferAdaptive(Vulkan::Texture& source, u32 l
   }
   RestoreGraphicsAPIState();
 
-  m_host_display->SetDisplayTexture(&m_display_texture, HostDisplayPixelFormat::RGBA8, m_display_texture.GetWidth(),
-                                    m_display_texture.GetHeight(), left, top, width, height);
+  g_host_display->SetDisplayTexture(&m_display_texture, left, top, width, height);
 }
 
 std::unique_ptr<GPU> GPU::CreateHardwareVulkanRenderer()

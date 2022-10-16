@@ -1,8 +1,3 @@
-// Copyright 2016 Dolphin Emulator Project
-// Copyright 2020 DuckStation Emulator Project
-// Licensed under GPLv2+
-// Refer to the LICENSE file included.
-
 #include "context.h"
 #include "../assert.h"
 #include "../log.h"
@@ -17,10 +12,13 @@ Log_SetChannel(Vulkan::Context);
 
 std::unique_ptr<Vulkan::Context> g_vulkan_context;
 
-namespace Vulkan {
+enum : u32
+{
+  TEXTURE_BUFFER_SIZE = 32 * 1024 * 1024,
+};
 
-Context::Context(VkInstance instance, VkPhysicalDevice physical_device, bool owns_device)
-  : m_instance(instance), m_physical_device(physical_device), m_owns_device(owns_device)
+Vulkan::Context::Context(VkInstance instance, VkPhysicalDevice physical_device, bool owns_device)
+  : m_instance(instance), m_physical_device(physical_device)
 {
   // Read device physical memory properties, we need it for allocating buffers
   vkGetPhysicalDeviceProperties(physical_device, &m_device_properties);
@@ -37,31 +35,9 @@ Context::Context(VkInstance instance, VkPhysicalDevice physical_device, bool own
     std::max(m_device_properties.limits.optimalBufferCopyRowPitchAlignment, static_cast<VkDeviceSize>(1));
 }
 
-Context::~Context()
-{
-  StopPresentThread();
+Vulkan::Context::~Context() = default;
 
-  if (m_device != VK_NULL_HANDLE)
-    WaitForGPUIdle();
-
-  DestroyRenderPassCache();
-  DestroyGlobalDescriptorPool();
-  DestroyCommandBuffers();
-
-  if (m_owns_device && m_device != VK_NULL_HANDLE)
-    vkDestroyDevice(m_device, nullptr);
-
-  if (m_debug_messenger_callback != VK_NULL_HANDLE)
-    DisableDebugUtils();
-
-  if (m_owns_device)
-  {
-    vkDestroyInstance(m_instance, nullptr);
-    Vulkan::UnloadVulkanLibrary();
-  }
-}
-
-bool Context::CheckValidationLayerAvailablility()
+bool Vulkan::Context::CheckValidationLayerAvailablility()
 {
   u32 extension_count = 0;
   VkResult res = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
@@ -97,7 +73,8 @@ bool Context::CheckValidationLayerAvailablility()
           }) != layer_list.end());
 }
 
-VkInstance Context::CreateVulkanInstance(const WindowInfo* wi, bool enable_debug_utils, bool enable_validation_layer)
+VkInstance Vulkan::Context::CreateVulkanInstance(const WindowInfo* wi, bool enable_debug_utils,
+                                                 bool enable_validation_layer)
 {
   ExtensionList enabled_extensions;
   if (!SelectInstanceExtensions(&enabled_extensions, wi, enable_debug_utils))
@@ -110,7 +87,7 @@ VkInstance Context::CreateVulkanInstance(const WindowInfo* wi, bool enable_debug
   app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
   app_info.pEngineName = "DuckStation";
   app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-  app_info.apiVersion = VK_MAKE_VERSION(1, 0, 0);
+  app_info.apiVersion = VK_API_VERSION_1_1;
 
   VkInstanceCreateInfo instance_create_info = {};
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -141,7 +118,8 @@ VkInstance Context::CreateVulkanInstance(const WindowInfo* wi, bool enable_debug
   return instance;
 }
 
-bool Context::SelectInstanceExtensions(ExtensionList* extension_list, const WindowInfo* wi, bool enable_debug_utils)
+bool Vulkan::Context::SelectInstanceExtensions(ExtensionList* extension_list, const WindowInfo* wi,
+                                               bool enable_debug_utils)
 {
   u32 extension_count = 0;
   VkResult res = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
@@ -216,7 +194,7 @@ bool Context::SelectInstanceExtensions(ExtensionList* extension_list, const Wind
   return true;
 }
 
-Context::GPUList Context::EnumerateGPUs(VkInstance instance)
+Vulkan::Context::GPUList Vulkan::Context::EnumerateGPUs(VkInstance instance)
 {
   u32 gpu_count = 0;
   VkResult res = vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr);
@@ -239,7 +217,7 @@ Context::GPUList Context::EnumerateGPUs(VkInstance instance)
   return gpus;
 }
 
-Context::GPUNameList Context::EnumerateGPUNames(VkInstance instance)
+Vulkan::Context::GPUNameList Vulkan::Context::EnumerateGPUNames(VkInstance instance)
 {
   u32 gpu_count = 0;
   VkResult res = vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr);
@@ -289,8 +267,9 @@ Context::GPUNameList Context::EnumerateGPUNames(VkInstance instance)
   return gpu_names;
 }
 
-bool Context::Create(std::string_view gpu_name, const WindowInfo* wi, std::unique_ptr<SwapChain>* out_swap_chain,
-                     bool threaded_presentation, bool enable_debug_utils, bool enable_validation_layer)
+bool Vulkan::Context::Create(std::string_view gpu_name, const WindowInfo* wi,
+                             std::unique_ptr<SwapChain>* out_swap_chain, bool threaded_presentation,
+                             bool enable_debug_utils, bool enable_validation_layer)
 {
   AssertMsg(!g_vulkan_context, "Has no current context");
 
@@ -368,7 +347,8 @@ bool Context::Create(std::string_view gpu_name, const WindowInfo* wi, std::uniqu
 
   // Attempt to create the device.
   if (!g_vulkan_context->CreateDevice(surface, enable_validation_layer, nullptr, 0, nullptr, 0, nullptr) ||
-      !g_vulkan_context->CreateGlobalDescriptorPool() || !g_vulkan_context->CreateCommandBuffers() ||
+      !g_vulkan_context->CreateAllocator() || !g_vulkan_context->CreateGlobalDescriptorPool() ||
+      !g_vulkan_context->CreateCommandBuffers() || !g_vulkan_context->CreateTextureStreamBuffer() ||
       (enable_surface && (*out_swap_chain = SwapChain::Create(wi_copy, surface, true)) == nullptr))
   {
     // Since we are destroying the instance, we're also responsible for destroying the surface.
@@ -385,13 +365,11 @@ bool Context::Create(std::string_view gpu_name, const WindowInfo* wi, std::uniqu
   return true;
 }
 
-bool Context::CreateFromExistingInstance(VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface,
-                                         bool take_ownership, bool enable_validation_layer, bool enable_debug_utils,
-                                         const char** required_device_extensions /* = nullptr */,
-                                         u32 num_required_device_extensions /* = 0 */,
-                                         const char** required_device_layers /* = nullptr */,
-                                         u32 num_required_device_layers /* = 0 */,
-                                         const VkPhysicalDeviceFeatures* required_features /* = nullptr */)
+bool Vulkan::Context::CreateFromExistingInstance(
+  VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface, bool take_ownership, bool enable_validation_layer,
+  bool enable_debug_utils, const char** required_device_extensions /* = nullptr */,
+  u32 num_required_device_extensions /* = 0 */, const char** required_device_layers /* = nullptr */,
+  u32 num_required_device_layers /* = 0 */, const VkPhysicalDeviceFeatures* required_features /* = nullptr */)
 {
   g_vulkan_context.reset(new Context(instance, gpu, take_ownership));
 
@@ -412,13 +390,37 @@ bool Context::CreateFromExistingInstance(VkInstance instance, VkPhysicalDevice g
   return true;
 }
 
-void Context::Destroy()
+void Vulkan::Context::Destroy()
 {
   AssertMsg(g_vulkan_context, "Has context");
+
+  g_vulkan_context->StopPresentThread();
+
+  if (g_vulkan_context->m_device != VK_NULL_HANDLE)
+    g_vulkan_context->WaitForGPUIdle();
+
+  g_vulkan_context->m_texture_upload_buffer.Destroy(false);
+
+  g_vulkan_context->DestroyRenderPassCache();
+  g_vulkan_context->DestroyGlobalDescriptorPool();
+  g_vulkan_context->DestroyCommandBuffers();
+  g_vulkan_context->DestroyAllocator();
+
+  if (g_vulkan_context->m_device != VK_NULL_HANDLE)
+    vkDestroyDevice(g_vulkan_context->m_device, nullptr);
+
+  if (g_vulkan_context->m_debug_messenger_callback != VK_NULL_HANDLE)
+    g_vulkan_context->DisableDebugUtils();
+
+  if (g_vulkan_context->m_instance != VK_NULL_HANDLE)
+    vkDestroyInstance(g_vulkan_context->m_instance, nullptr);
+
+  Vulkan::UnloadVulkanLibrary();
+
   g_vulkan_context.reset();
 }
 
-bool Context::SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface)
+bool Vulkan::Context::SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface)
 {
   u32 extension_count = 0;
   VkResult res = vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &extension_count, nullptr);
@@ -467,10 +469,13 @@ bool Context::SelectDeviceExtensions(ExtensionList* extension_list, bool enable_
   if (enable_surface && !SupportsExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, true))
     return false;
 
+  m_optional_extensions.vk_ext_memory_budget = SupportsExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false);
+  m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
+
   return true;
 }
 
-bool Context::SelectDeviceFeatures(const VkPhysicalDeviceFeatures* required_features)
+bool Vulkan::Context::SelectDeviceFeatures(const VkPhysicalDeviceFeatures* required_features)
 {
   VkPhysicalDeviceFeatures available_features;
   vkGetPhysicalDeviceFeatures(m_physical_device, &available_features);
@@ -484,9 +489,10 @@ bool Context::SelectDeviceFeatures(const VkPhysicalDeviceFeatures* required_feat
   return true;
 }
 
-bool Context::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer, const char** required_device_extensions,
-                           u32 num_required_device_extensions, const char** required_device_layers,
-                           u32 num_required_device_layers, const VkPhysicalDeviceFeatures* required_features)
+bool Vulkan::Context::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer,
+                                   const char** required_device_extensions, u32 num_required_device_extensions,
+                                   const char** required_device_layers, u32 num_required_device_layers,
+                                   const VkPhysicalDeviceFeatures* required_features)
 {
   u32 queue_family_count;
   vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &queue_family_count, nullptr);
@@ -622,13 +628,66 @@ bool Context::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer, c
   // Grab the graphics and present queues.
   vkGetDeviceQueue(m_device, m_graphics_queue_family_index, 0, &m_graphics_queue);
   if (surface)
-  {
     vkGetDeviceQueue(m_device, m_present_queue_family_index, 0, &m_present_queue);
-  }
+
+  m_gpu_timing_supported = (m_device_properties.limits.timestampComputeAndGraphics != 0 &&
+                            queue_family_properties[m_graphics_queue_family_index].timestampValidBits > 0 &&
+                            m_device_properties.limits.timestampPeriod > 0);
+  Log_VerbosePrintf("GPU timing is %s (TS=%u TS valid bits=%u, TS period=%f)",
+                    m_gpu_timing_supported ? "supported" : "not supported",
+                    static_cast<u32>(m_device_properties.limits.timestampComputeAndGraphics),
+                    queue_family_properties[m_graphics_queue_family_index].timestampValidBits,
+                    m_device_properties.limits.timestampPeriod);
+
+  ProcessDeviceExtensions();
   return true;
 }
 
-bool Context::CreateCommandBuffers()
+void Vulkan::Context::ProcessDeviceExtensions()
+{
+  VkPhysicalDeviceProperties2 properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  if (m_optional_extensions.vk_khr_driver_properties)
+  {
+    m_device_driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    Util::AddPointerToChain(&properties2, &m_device_driver_properties);
+  }
+
+  // query
+  vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
+}
+
+bool Vulkan::Context::CreateAllocator()
+{
+  VmaAllocatorCreateInfo ci = {};
+  ci.vulkanApiVersion = VK_API_VERSION_1_1;
+  ci.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+  ci.physicalDevice = m_physical_device;
+  ci.device = m_device;
+  ci.instance = m_instance;
+
+  if (m_optional_extensions.vk_ext_memory_budget)
+    ci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+
+  VkResult res = vmaCreateAllocator(&ci, &m_allocator);
+  if (res != VK_SUCCESS)
+  {
+    LOG_VULKAN_ERROR(res, "vmaCreateAllocator failed: ");
+    return false;
+  }
+
+  return true;
+}
+
+void Vulkan::Context::DestroyAllocator()
+{
+  if (m_allocator == VK_NULL_HANDLE)
+    return;
+
+  vmaDestroyAllocator(m_allocator);
+  m_allocator = VK_NULL_HANDLE;
+}
+
+bool Vulkan::Context::CreateCommandBuffers()
 {
   VkResult res;
 
@@ -698,7 +757,7 @@ bool Context::CreateCommandBuffers()
   return true;
 }
 
-void Context::DestroyCommandBuffers()
+void Vulkan::Context::DestroyCommandBuffers()
 {
   for (FrameResources& resources : m_frame_resources)
   {
@@ -729,7 +788,7 @@ void Context::DestroyCommandBuffers()
   }
 }
 
-bool Context::CreateGlobalDescriptorPool()
+bool Vulkan::Context::CreateGlobalDescriptorPool()
 {
   // TODO: A better way to choose the number of descriptors.
   VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1024},
@@ -751,10 +810,24 @@ bool Context::CreateGlobalDescriptorPool()
     return false;
   }
   Vulkan::Util::SetObjectName(g_vulkan_context->GetDevice(), m_global_descriptor_pool, "Global Descriptor Pool");
+
+  if (m_gpu_timing_supported)
+  {
+    const VkQueryPoolCreateInfo query_create_info = {
+      VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, NUM_COMMAND_BUFFERS * 2, 0};
+    res = vkCreateQueryPool(m_device, &query_create_info, nullptr, &m_timestamp_query_pool);
+    if (res != VK_SUCCESS)
+    {
+      LOG_VULKAN_ERROR(res, "vkCreateQueryPool failed: ");
+      m_gpu_timing_supported = false;
+      return false;
+    }
+  }
+
   return true;
 }
 
-void Context::DestroyGlobalDescriptorPool()
+void Vulkan::Context::DestroyGlobalDescriptorPool()
 {
   if (m_global_descriptor_pool != VK_NULL_HANDLE)
   {
@@ -763,7 +836,18 @@ void Context::DestroyGlobalDescriptorPool()
   }
 }
 
-void Context::DestroyRenderPassCache()
+bool Vulkan::Context::CreateTextureStreamBuffer()
+{
+  if (!m_texture_upload_buffer.Create(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, TEXTURE_BUFFER_SIZE))
+  {
+    Log_ErrorPrintf("Failed to allocate texture upload buffer");
+    return false;
+  }
+
+  return true;
+}
+
+void Vulkan::Context::DestroyRenderPassCache()
 {
   for (auto& it : m_render_pass_cache)
     vkDestroyRenderPass(m_device, it.second, nullptr);
@@ -771,7 +855,7 @@ void Context::DestroyRenderPassCache()
   m_render_pass_cache.clear();
 }
 
-VkDescriptorSet Context::AllocateDescriptorSet(VkDescriptorSetLayout set_layout)
+VkDescriptorSet Vulkan::Context::AllocateDescriptorSet(VkDescriptorSetLayout set_layout)
 {
   VkDescriptorSetAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
                                                m_frame_resources[m_current_frame].descriptor_pool, 1, &set_layout};
@@ -788,7 +872,7 @@ VkDescriptorSet Context::AllocateDescriptorSet(VkDescriptorSetLayout set_layout)
   return descriptor_set;
 }
 
-VkDescriptorSet Context::AllocateGlobalDescriptorSet(VkDescriptorSetLayout set_layout)
+VkDescriptorSet Vulkan::Context::AllocateGlobalDescriptorSet(VkDescriptorSetLayout set_layout)
 {
   VkDescriptorSetAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
                                                m_global_descriptor_pool, 1, &set_layout};
@@ -801,12 +885,12 @@ VkDescriptorSet Context::AllocateGlobalDescriptorSet(VkDescriptorSetLayout set_l
   return descriptor_set;
 }
 
-void Context::FreeGlobalDescriptorSet(VkDescriptorSet set)
+void Vulkan::Context::FreeGlobalDescriptorSet(VkDescriptorSet set)
 {
   vkFreeDescriptorSets(m_device, m_global_descriptor_pool, 1, &set);
 }
 
-void Context::WaitForFenceCounter(u64 fence_counter)
+void Vulkan::Context::WaitForFenceCounter(u64 fence_counter)
 {
   if (m_completed_fence_counter >= fence_counter)
     return;
@@ -825,13 +909,26 @@ void Context::WaitForFenceCounter(u64 fence_counter)
   WaitForCommandBufferCompletion(index);
 }
 
-void Context::WaitForGPUIdle()
+void Vulkan::Context::WaitForGPUIdle()
 {
   WaitForPresentComplete();
   vkDeviceWaitIdle(m_device);
 }
 
-void Context::WaitForCommandBufferCompletion(u32 index)
+float Vulkan::Context::GetAndResetAccumulatedGPUTime()
+{
+  const float time = m_accumulated_gpu_time;
+  m_accumulated_gpu_time = 0.0f;
+  return time;
+}
+
+bool Vulkan::Context::SetEnableGPUTiming(bool enabled)
+{
+  m_gpu_timing_enabled = enabled && m_gpu_timing_supported;
+  return (enabled == m_gpu_timing_enabled);
+}
+
+void Vulkan::Context::WaitForCommandBufferCompletion(u32 index)
 {
   // Wait for this command buffer to be completed.
   VkResult res = vkWaitForFences(m_device, 1, &m_frame_resources[index].fence, VK_TRUE, UINT64_MAX);
@@ -861,12 +958,19 @@ void Context::WaitForCommandBufferCompletion(u32 index)
   m_completed_fence_counter = now_completed_counter;
 }
 
-void Context::SubmitCommandBuffer(VkSemaphore wait_semaphore /* = VK_NULL_HANDLE */,
-                                  VkSemaphore signal_semaphore /* = VK_NULL_HANDLE */,
-                                  VkSwapchainKHR present_swap_chain /* = VK_NULL_HANDLE */,
-                                  uint32_t present_image_index /* = 0xFFFFFFFF */, bool submit_on_thread /* = false */)
+void Vulkan::Context::SubmitCommandBuffer(VkSemaphore wait_semaphore /* = VK_NULL_HANDLE */,
+                                          VkSemaphore signal_semaphore /* = VK_NULL_HANDLE */,
+                                          VkSwapchainKHR present_swap_chain /* = VK_NULL_HANDLE */,
+                                          uint32_t present_image_index /* = 0xFFFFFFFF */,
+                                          bool submit_on_thread /* = false */)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
+
+  if (m_gpu_timing_enabled && resources.timestamp_written)
+  {
+    vkCmdWriteTimestamp(m_current_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
+                        m_current_frame * 2 + 1);
+  }
 
   // End the current command buffer.
   VkResult res = vkEndCommandBuffer(resources.command_buffer);
@@ -899,7 +1003,7 @@ void Context::SubmitCommandBuffer(VkSemaphore wait_semaphore /* = VK_NULL_HANDLE
   m_present_queued_cv.notify_one();
 }
 
-void Context::DoSubmitCommandBuffer(u32 index, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore)
+void Vulkan::Context::DoSubmitCommandBuffer(u32 index, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore)
 {
   FrameResources& resources = m_frame_resources[index];
 
@@ -928,7 +1032,8 @@ void Context::DoSubmitCommandBuffer(u32 index, VkSemaphore wait_semaphore, VkSem
   }
 }
 
-void Context::DoPresent(VkSemaphore wait_semaphore, VkSwapchainKHR present_swap_chain, uint32_t present_image_index)
+void Vulkan::Context::DoPresent(VkSemaphore wait_semaphore, VkSwapchainKHR present_swap_chain,
+                                uint32_t present_image_index)
 {
   // Should have a signal semaphore.
   Assert(wait_semaphore != VK_NULL_HANDLE);
@@ -952,7 +1057,7 @@ void Context::DoPresent(VkSemaphore wait_semaphore, VkSwapchainKHR present_swap_
   }
 }
 
-void Context::WaitForPresentComplete()
+void Vulkan::Context::WaitForPresentComplete()
 {
   if (m_present_done.load())
     return;
@@ -961,7 +1066,7 @@ void Context::WaitForPresentComplete()
   WaitForPresentComplete(lock);
 }
 
-void Context::WaitForPresentComplete(std::unique_lock<std::mutex>& lock)
+void Vulkan::Context::WaitForPresentComplete(std::unique_lock<std::mutex>& lock)
 {
   if (m_present_done.load())
     return;
@@ -969,7 +1074,7 @@ void Context::WaitForPresentComplete(std::unique_lock<std::mutex>& lock)
   m_present_done_cv.wait(lock, [this]() { return m_present_done.load(); });
 }
 
-void Context::PresentThread()
+void Vulkan::Context::PresentThread()
 {
   std::unique_lock<std::mutex> lock(m_present_mutex);
   while (!m_present_thread_done.load())
@@ -988,14 +1093,14 @@ void Context::PresentThread()
   }
 }
 
-void Context::StartPresentThread()
+void Vulkan::Context::StartPresentThread()
 {
   Assert(!m_present_thread.joinable());
   m_present_thread_done.store(false);
   m_present_thread = std::thread(&Context::PresentThread, this);
 }
 
-void Context::StopPresentThread()
+void Vulkan::Context::StopPresentThread()
 {
   if (!m_present_thread.joinable())
     return;
@@ -1010,12 +1115,12 @@ void Context::StopPresentThread()
   m_present_thread.join();
 }
 
-void Context::MoveToNextCommandBuffer()
+void Vulkan::Context::MoveToNextCommandBuffer()
 {
   ActivateCommandBuffer((m_current_frame + 1) % NUM_COMMAND_BUFFERS);
 }
 
-void Context::ActivateCommandBuffer(u32 index)
+void Vulkan::Context::ActivateCommandBuffer(u32 index)
 {
   FrameResources& resources = m_frame_resources[index];
 
@@ -1048,12 +1153,48 @@ void Context::ActivateCommandBuffer(u32 index)
   if (res != VK_SUCCESS)
     LOG_VULKAN_ERROR(res, "vkResetDescriptorPool failed: ");
 
+  if (m_gpu_timing_enabled)
+  {
+    if (resources.timestamp_written)
+    {
+      std::array<u64, 2> timestamps;
+      res =
+        vkGetQueryPoolResults(m_device, m_timestamp_query_pool, index * 2, static_cast<u32>(timestamps.size()),
+                              sizeof(u64) * timestamps.size(), timestamps.data(), sizeof(u64), VK_QUERY_RESULT_64_BIT);
+      if (res == VK_SUCCESS)
+      {
+        // if we didn't write the timestamp at the start of the cmdbuffer (just enabled timing), the first TS will be
+        // zero
+        if (timestamps[0] > 0)
+        {
+          const double ns_diff =
+            (timestamps[1] - timestamps[0]) * static_cast<double>(m_device_properties.limits.timestampPeriod);
+          m_accumulated_gpu_time =
+            static_cast<float>(static_cast<double>(m_accumulated_gpu_time) + (ns_diff / 1000000.0));
+        }
+      }
+      else
+      {
+        LOG_VULKAN_ERROR(res, "vkGetQueryPoolResults failed: ");
+      }
+    }
+
+    vkCmdResetQueryPool(resources.command_buffer, m_timestamp_query_pool, index * 2, 2);
+    vkCmdWriteTimestamp(resources.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
+                        index * 2);
+  }
+
+  resources.fence_counter = m_next_fence_counter++;
+  resources.timestamp_written = m_gpu_timing_enabled;
+
   m_current_frame = index;
   m_current_command_buffer = resources.command_buffer;
-  resources.fence_counter = m_next_fence_counter++;
+
+  // using the lower 32 bits of the fence index should be sufficient here, I hope...
+  vmaSetCurrentFrameIndex(m_allocator, static_cast<u32>(m_next_fence_counter));
 }
 
-void Context::ExecuteCommandBuffer(bool wait_for_completion)
+void Vulkan::Context::ExecuteCommandBuffer(bool wait_for_completion)
 {
   // If we're waiting for completion, don't bother waking the worker thread.
   const u32 current_frame = m_current_frame;
@@ -1064,59 +1205,73 @@ void Context::ExecuteCommandBuffer(bool wait_for_completion)
     WaitForCommandBufferCompletion(current_frame);
 }
 
-bool Context::CheckLastPresentFail()
+bool Vulkan::Context::CheckLastPresentFail()
 {
   bool res = m_last_present_failed;
   m_last_present_failed = false;
   return res;
 }
 
-void Context::DeferBufferDestruction(VkBuffer object)
+void Vulkan::Context::DeferBufferDestruction(VkBuffer object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkDestroyBuffer(m_device, object, nullptr); });
 }
 
-void Context::DeferBufferViewDestruction(VkBufferView object)
+void Vulkan::Context::DeferBufferDestruction(VkBuffer object, VmaAllocation allocation)
+{
+  FrameResources& resources = m_frame_resources[m_current_frame];
+  resources.cleanup_resources.push_back(
+    [this, object, allocation]() { vmaDestroyBuffer(m_allocator, object, allocation); });
+}
+
+void Vulkan::Context::DeferBufferViewDestruction(VkBufferView object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkDestroyBufferView(m_device, object, nullptr); });
 }
 
-void Context::DeferDeviceMemoryDestruction(VkDeviceMemory object)
+void Vulkan::Context::DeferDeviceMemoryDestruction(VkDeviceMemory object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkFreeMemory(m_device, object, nullptr); });
 }
 
-void Context::DeferFramebufferDestruction(VkFramebuffer object)
+void Vulkan::Context::DeferFramebufferDestruction(VkFramebuffer object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkDestroyFramebuffer(m_device, object, nullptr); });
 }
 
-void Context::DeferImageDestruction(VkImage object)
+void Vulkan::Context::DeferImageDestruction(VkImage object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkDestroyImage(m_device, object, nullptr); });
 }
 
-void Context::DeferImageViewDestruction(VkImageView object)
+void Vulkan::Context::DeferImageDestruction(VkImage object, VmaAllocation allocation)
+{
+  FrameResources& resources = m_frame_resources[m_current_frame];
+  resources.cleanup_resources.push_back(
+    [this, object, allocation]() { vmaDestroyImage(m_allocator, object, allocation); });
+}
+
+void Vulkan::Context::DeferImageViewDestruction(VkImageView object)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, object]() { vkDestroyImageView(m_device, object, nullptr); });
 }
 
-void Context::DeferPipelineDestruction(VkPipeline pipeline)
+void Vulkan::Context::DeferPipelineDestruction(VkPipeline pipeline)
 {
   FrameResources& resources = m_frame_resources[m_current_frame];
   resources.cleanup_resources.push_back([this, pipeline]() { vkDestroyPipeline(m_device, pipeline, nullptr); });
 }
 
-VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-                                                      VkDebugUtilsMessageTypeFlagsEXT messageType,
-                                                      const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                                      void* pUserData)
+static VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                             VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                                             void* pUserData)
 {
   LOGLEVEL level;
   if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
@@ -1133,7 +1288,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback(VkDebugUtilsMessageSeverit
   return VK_FALSE;
 }
 
-bool Context::EnableDebugUtils()
+bool Vulkan::Context::EnableDebugUtils()
 {
   // Already enabled?
   if (m_debug_messenger_callback != VK_NULL_HANDLE)
@@ -1166,7 +1321,7 @@ bool Context::EnableDebugUtils()
   return true;
 }
 
-void Context::DisableDebugUtils()
+void Vulkan::Context::DisableDebugUtils()
 {
   if (m_debug_messenger_callback != VK_NULL_HANDLE)
   {
@@ -1175,99 +1330,8 @@ void Context::DisableDebugUtils()
   }
 }
 
-bool Context::GetMemoryType(u32 bits, VkMemoryPropertyFlags properties, u32* out_type_index)
-{
-  for (u32 i = 0; i < VK_MAX_MEMORY_TYPES; i++)
-  {
-    if ((bits & (1 << i)) != 0)
-    {
-      u32 supported = m_device_memory_properties.memoryTypes[i].propertyFlags & properties;
-      if (supported == properties)
-      {
-        *out_type_index = i;
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-u32 Context::GetMemoryType(u32 bits, VkMemoryPropertyFlags properties)
-{
-  u32 type_index = VK_MAX_MEMORY_TYPES;
-  if (!GetMemoryType(bits, properties, &type_index))
-  {
-    Log_ErrorPrintf("Unable to find memory type for %x:%x", bits, properties);
-    Panic("Unable to find memory type");
-  }
-
-  return type_index;
-}
-
-u32 Context::GetUploadMemoryType(u32 bits, bool* is_coherent)
-{
-  // Try for coherent memory first.
-  VkMemoryPropertyFlags flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-  u32 type_index;
-  if (!GetMemoryType(bits, flags, &type_index))
-  {
-    Log_WarningPrintf("Vulkan: Failed to find a coherent memory type for uploads, this will affect performance.");
-
-    // Try non-coherent memory.
-    flags &= ~VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    if (!GetMemoryType(bits, flags, &type_index))
-    {
-      // We shouldn't have any memory types that aren't host-visible.
-      Panic("Unable to get memory type for upload.");
-      type_index = 0;
-    }
-  }
-
-  if (is_coherent)
-    *is_coherent = ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0);
-
-  return type_index;
-}
-
-u32 Context::GetReadbackMemoryType(u32 bits, bool* is_coherent, bool* is_cached)
-{
-  // Try for cached and coherent memory first.
-  VkMemoryPropertyFlags flags =
-    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-  u32 type_index;
-  if (!GetMemoryType(bits, flags, &type_index))
-  {
-    // For readbacks, caching is more important than coherency.
-    flags &= ~VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    if (!GetMemoryType(bits, flags, &type_index))
-    {
-      Log_WarningPrintf("Vulkan: Failed to find a cached memory type for readbacks, this will affect "
-                        "performance.");
-
-      // Remove the cached bit as well.
-      flags &= ~VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-      if (!GetMemoryType(bits, flags, &type_index))
-      {
-        // We shouldn't have any memory types that aren't host-visible.
-        Panic("Unable to get memory type for upload.");
-        type_index = 0;
-      }
-    }
-  }
-
-  if (is_coherent)
-    *is_coherent = ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0);
-  if (is_cached)
-    *is_cached = ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0);
-
-  return type_index;
-}
-
-VkRenderPass Context::GetRenderPass(VkFormat color_format, VkFormat depth_format, VkSampleCountFlagBits samples,
-                                    VkAttachmentLoadOp load_op)
+VkRenderPass Vulkan::Context::GetRenderPass(VkFormat color_format, VkFormat depth_format, VkSampleCountFlagBits samples,
+                                            VkAttachmentLoadOp load_op)
 {
   auto key = std::tie(color_format, depth_format, samples, load_op);
   auto it = m_render_pass_cache.find(key);
@@ -1344,5 +1408,3 @@ VkRenderPass Context::GetRenderPass(VkFormat color_format, VkFormat depth_format
   m_render_pass_cache.emplace(key, pass);
   return pass;
 }
-
-} // namespace Vulkan

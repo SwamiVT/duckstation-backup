@@ -2,11 +2,11 @@
 #include "common/byte_stream.h"
 #include "common/file_system.h"
 #include "common/log.h"
-#include "common/shiftjis.h"
-#include "common/state_wrapper.h"
+#include "common/path.h"
 #include "common/string_util.h"
-#include "host_interface.h"
 #include "system.h"
+#include "util/shiftjis.h"
+#include "util/state_wrapper.h"
 #include <algorithm>
 #include <cstdio>
 #include <optional>
@@ -97,7 +97,7 @@ bool LoadFromFile(DataArray* data, const char* filename)
   if (!FileSystem::StatFile(filename, &sd) || sd.Size != DATA_SIZE)
     return false;
 
-  std::unique_ptr<ByteStream> stream = FileSystem::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
+  std::unique_ptr<ByteStream> stream = ByteStream::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
   if (!stream || stream->GetSize() != DATA_SIZE)
     return false;
 
@@ -115,7 +115,7 @@ bool LoadFromFile(DataArray* data, const char* filename)
 bool SaveToFile(const DataArray& data, const char* filename)
 {
   std::unique_ptr<ByteStream> stream =
-    FileSystem::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
+    ByteStream::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
                                      BYTESTREAM_OPEN_ATOMIC_UPDATE | BYTESTREAM_OPEN_STREAMED);
   if (!stream)
   {
@@ -523,6 +523,48 @@ static bool ImportCardGME(DataArray* data, const char* filename, std::vector<u8>
   return true;
 }
 
+static bool ImportCardVGS(DataArray* data, const char* filename, std::vector<u8> file_data)
+{
+  constexpr u32 HEADER_SIZE = 64;
+
+  if (file_data.size() != (HEADER_SIZE + DATA_SIZE))
+  {
+    Log_ErrorPrintf("Failed to import memory card from '%s': file is incorrect size.", filename);
+    return false;
+  }
+
+  // Connectix Virtual Game Station format (.MEM): "VgsM", 64 bytes
+  if (file_data[0] != 'V' || file_data[1] != 'g' || file_data[2] != 's' || file_data[3] != 'M')
+  {
+    Log_ErrorPrintf("Failed to import memory card from '%s': incorrect header.", filename);
+    return false;
+  }
+
+  std::memcpy(data->data(), &file_data[HEADER_SIZE], DATA_SIZE);
+  return true;
+}
+
+static bool ImportCardPSX(DataArray* data, const char* filename, std::vector<u8> file_data)
+{
+  constexpr u32 HEADER_SIZE = 256;
+
+  if (file_data.size() != (HEADER_SIZE + DATA_SIZE))
+  {
+    Log_ErrorPrintf("Failed to import memory card from '%s': file is incorrect size.", filename);
+    return false;
+  }
+
+  // Connectix Virtual Game Station format (.MEM): "VgsM", 64 bytes
+  if (file_data[0] != 'P' || file_data[1] != 'S' || file_data[2] != 'V')
+  {
+    Log_ErrorPrintf("Failed to import memory card from '%s': incorrect header.", filename);
+    return false;
+  }
+
+  std::memcpy(data->data(), &file_data[HEADER_SIZE], DATA_SIZE);
+  return true;
+}
+
 bool ImportCard(DataArray* data, const char* filename, std::vector<u8> file_data)
 {
   const char* extension = std::strrchr(filename, '.');
@@ -533,13 +575,23 @@ bool ImportCard(DataArray* data, const char* filename, std::vector<u8> file_data
   }
 
   if (StringUtil::Strcasecmp(extension, ".mcd") == 0 || StringUtil::Strcasecmp(extension, ".mcr") == 0 ||
-      StringUtil::Strcasecmp(extension, ".mc") == 0 || StringUtil::Strcasecmp(extension, ".srm") == 0)
+      StringUtil::Strcasecmp(extension, ".mc") == 0 || StringUtil::Strcasecmp(extension, ".srm") == 0 ||
+      StringUtil::Strcasecmp(extension, ".psm") == 0 || StringUtil::Strcasecmp(extension, ".ps") == 0 ||
+      StringUtil::Strcasecmp(extension, ".ddf") == 0)
   {
     return ImportCardMCD(data, filename, std::move(file_data));
   }
   else if (StringUtil::Strcasecmp(extension, ".gme") == 0)
   {
     return ImportCardGME(data, filename, std::move(file_data));
+  }
+  else if (StringUtil::Strcasecmp(extension, ".mem") == 0 || StringUtil::Strcasecmp(extension, ".vgs") == 0)
+  {
+    return ImportCardVGS(data, filename, std::move(file_data));
+  }
+  else if (StringUtil::Strcasecmp(extension, ".psx") == 0)
+  {
+    return ImportCardPSX(data, filename, std::move(file_data));
   }
   else
   {
@@ -560,7 +612,7 @@ bool ImportCard(DataArray* data, const char* filename)
 bool ExportSave(DataArray* data, const FileInfo& fi, const char* filename)
 {
   std::unique_ptr<ByteStream> stream =
-    FileSystem::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
+    ByteStream::OpenFile(filename, BYTESTREAM_OPEN_CREATE | BYTESTREAM_OPEN_TRUNCATE | BYTESTREAM_OPEN_WRITE |
                                      BYTESTREAM_OPEN_ATOMIC_UPDATE | BYTESTREAM_OPEN_STREAMED);
   if (!stream)
   {
@@ -599,7 +651,7 @@ static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, 
     return false;
   }
 
-  std::unique_ptr<ByteStream> stream = FileSystem::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
+  std::unique_ptr<ByteStream> stream = ByteStream::OpenFile(filename, BYTESTREAM_OPEN_READ | BYTESTREAM_OPEN_STREAMED);
   if (!stream)
   {
     Log_ErrorPrintf("Failed to open '%s' for reading", filename);
@@ -655,7 +707,8 @@ static bool ImportSaveWithDirectoryFrame(DataArray* data, const char* filename, 
 
 static bool ImportRawSave(DataArray* data, const char* filename, const FILESYSTEM_STAT_DATA& sd)
 {
-  std::string save_name(FileSystem::GetFileTitleFromPath(filename));
+  const std::string display_name(FileSystem::GetDisplayNameFromPath(filename));
+  std::string save_name(Path::GetFileTitle(filename));
   if (save_name.length() == 0)
   {
     Log_ErrorPrintf("Invalid filename: '%s'", filename);

@@ -21,6 +21,12 @@ const char* rc_console_name(int console_id)
     case RC_CONSOLE_ARCADE:
       return "Arcade";
 
+    case RC_CONSOLE_ARCADIA_2001:
+      return "Arcadia 2001";
+
+    case RC_CONSOLE_ARDUBOY:
+      return "Arduboy";
+
     case RC_CONSOLE_ATARI_2600:
       return "Atari 2600";
 
@@ -53,6 +59,9 @@ const char* rc_console_name(int console_id)
 
     case RC_CONSOLE_DREAMCAST:
       return "Dreamcast";
+
+    case RC_CONSOLE_ELEKTOR_TV_GAMES_COMPUTER:
+      return "Elektor TV Games Computer";
 
     case RC_CONSOLE_EVENTS:
       return "Events";
@@ -87,6 +96,9 @@ const char* rc_console_name(int console_id)
     case RC_CONSOLE_INTELLIVISION:
       return "Intellivision";
 
+    case RC_CONSOLE_INTERTON_VC_4000:
+      return "Interton VC 4000";
+
     case RC_CONSOLE_MAGNAVOX_ODYSSEY2:
       return "Magnavox Odyssey 2";
 
@@ -95,6 +107,9 @@ const char* rc_console_name(int console_id)
 
     case RC_CONSOLE_MEGA_DRIVE:
       return "Sega Genesis";
+
+    case RC_CONSOLE_MEGADUCK:
+      return "Mega Duck";
 
     case RC_CONSOLE_MS_DOS:
       return "MS-DOS";
@@ -126,6 +141,9 @@ const char* rc_console_name(int console_id)
     case RC_CONSOLE_ORIC:
       return "Oric";
 
+    case RC_CONSOLE_PC6000:
+      return "PC-6000";
+
     case RC_CONSOLE_PC8800:
       return "PC-8000/8800";
 
@@ -155,6 +173,9 @@ const char* rc_console_name(int console_id)
 
     case RC_CONSOLE_SEGA_CD:
       return "Sega CD";
+	  
+    case RC_CONSOLE_PICO:
+      return "Sega Pico";
 
     case RC_CONSOLE_SATURN:
       return "Sega Saturn";
@@ -189,6 +210,9 @@ const char* rc_console_name(int console_id)
     case RC_CONSOLE_VIRTUAL_BOY:
       return "Virtual Boy";
 
+    case RC_CONSOLE_WASM4:
+      return "WASM-4";
+
     case RC_CONSOLE_WII:
       return "Wii";
 
@@ -203,6 +227,9 @@ const char* rc_console_name(int console_id)
 
     case RC_CONSOLE_XBOX:
       return "XBOX";
+
+    case RC_CONSOLE_ZEEBO:
+      return "Zeebo";
 
     case RC_CONSOLE_ZX81:
       return "ZX-81";
@@ -227,12 +254,59 @@ static const rc_memory_region_t _rc_memory_regions_3do[] = {
 };
 static const rc_memory_regions_t rc_memory_regions_3do = { _rc_memory_regions_3do, 1 };
 
+/* ===== Amiga ===== */
+/* http://amigadev.elowar.com/read/ADCD_2.1/Hardware_Manual_guide/node00D3.html */
+static const rc_memory_region_t _rc_memory_regions_amiga[] = {
+    { 0x000000U, 0x07FFFFU, 0x000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Main RAM" }, /* 512KB main RAM */
+    { 0x080000U, 0x0FFFFFU, 0x080000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Extended RAM" }, /* 512KB extended RAM */
+};
+static const rc_memory_regions_t rc_memory_regions_amiga = { _rc_memory_regions_amiga, 2 };
+
+/* ===== Amstrad CPC ===== */
+/* http://www.cpcalive.com/docs/amstrad_cpc_6128_memory_map.html */
+/* https://www.cpcwiki.eu/index.php/File:AWMG_page151.jpg */
+/* The original CPC only had 64KB of memory, but the newer model has 128KB (expandable to 576KB) */
+/* https://www.grimware.org/doku.php/documentations/devices/gatearraydo=export_xhtml#mmr */
+static const rc_memory_region_t _rc_memory_regions_amstrad_pc[] = {
+    { 0x000000U, 0x00003FU, 0x000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Firmware" },
+    { 0x000040U, 0x00B0FFU, 0x000040U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    { 0x00B100U, 0x00BFFFU, 0x00B100U, RC_MEMORY_TYPE_SYSTEM_RAM, "Stack and Firmware Data" },
+    { 0x00C000U, 0x00FFFFU, 0x00C000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Screen Memory" },
+    { 0x010000U, 0x08FFFFU, 0x010000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Extended RAM" },
+};
+static const rc_memory_regions_t rc_memory_regions_amstrad_pc = { _rc_memory_regions_amstrad_pc, 5 };
+
 /* ===== Apple II ===== */
 static const rc_memory_region_t _rc_memory_regions_appleii[] = {
     { 0x000000U, 0x00FFFFU, 0x000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Main RAM" },
     { 0x010000U, 0x01FFFFU, 0x010000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Auxillary RAM" }
 };
 static const rc_memory_regions_t rc_memory_regions_appleii = { _rc_memory_regions_appleii, 2 };
+
+/* ===== Arcadia 2001 ===== */
+/* https://amigan.yatho.com/a-coding.txt */
+/* RAM banks 1 and 2 only exist on some variant models - no game actually uses them */
+static const rc_memory_region_t _rc_memory_regions_arcadia_2001[] = {
+    { 0x000000U, 0x0000FFU, 0x001800U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* RAM bank 3 */
+    { 0x000100U, 0x0001FFU, 0x001900U, RC_MEMORY_TYPE_HARDWARE_CONTROLLER, "I/O Area" },
+    { 0x000200U, 0x0002FFU, 0x001A00U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* RAM bank 4 */
+};
+static const rc_memory_regions_t rc_memory_regions_arcadia_2001 = { _rc_memory_regions_arcadia_2001, 3 };
+
+/* ===== Arduboy ===== */
+/* https://scienceprog.com/avr-microcontroller-memory-map/ (Atmega32) */
+static const rc_memory_region_t _rc_memory_regions_arduboy[] = {
+    { 0x000000U, 0x0000FFU, 0x00000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Registers" },
+    /* https://www.dailydot.com/debug/arduboy-kickstarter/ 2.5KB of RAM */
+    /* https://github.com/buserror/simavr/blob/1d227277b3d0039f9faef9ea62880ca3051b14f8/simavr/cores/avr/iom32u4.h#L1444-L1445 */
+    { 0x000100U, 0x000AFFU, 0x00000100U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    /* 1KB of EEPROM https://github.com/libretro/arduous/blob/93e1a6289b42ef48de1fcfb96443981725955ad0/src/arduous/arduous.cpp#L453-L455
+     * https://github.com/buserror/simavr/blob/1d227277b3d0039f9faef9ea62880ca3051b14f8/simavr/cores/avr/iom32u4.h#L1450 */
+    /* EEPROM has it's own addressing scheme starting at $0000. I've chosen to virtualize the address
+     * at $80000000 to avoid a conflict */
+    { 0x000B00U, 0x000EFFU, 0x80000000U, RC_MEMORY_TYPE_SAVE_RAM, "EEPROM" }
+};
+static const rc_memory_regions_t rc_memory_regions_arduboy = { _rc_memory_regions_arduboy, 3 };
 
 /* ===== Atari 2600 ===== */
 static const rc_memory_region_t _rc_memory_regions_atari2600[] = {
@@ -279,6 +353,52 @@ static const rc_memory_region_t _rc_memory_regions_colecovision[] = {
     { 0x000000U, 0x0003FFU, 0x006000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }
 };
 static const rc_memory_regions_t rc_memory_regions_colecovision = { _rc_memory_regions_colecovision, 1 };
+
+/* ===== Commodore 64 ===== */
+/* https://www.c64-wiki.com/wiki/Memory_Map */
+/* https://sta.c64.org/cbm64mem.html */
+static const rc_memory_region_t _rc_memory_regions_c64[] = {
+    { 0x000000U, 0x0003FFU, 0x000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Kernel RAM" },
+    { 0x000400U, 0x0007FFU, 0x000400U, RC_MEMORY_TYPE_VIDEO_RAM, "Screen RAM" },
+    { 0x000800U, 0x009FFFU, 0x000800U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* BASIC Program Storage Area */
+    { 0x00A000U, 0x00BFFFU, 0x00A000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* Machine Language Storage Area / BASIC ROM Area */
+    { 0x00C000U, 0x00CFFFU, 0x00C000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* Machine Language Storage Area */
+    { 0x00D000U, 0x00DFFFU, 0x00D000U, RC_MEMORY_TYPE_SYSTEM_RAM, "I/O Area" },   /* also Character ROM */
+    { 0x00E000U, 0x00FFFFU, 0x00E000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, /* Machine Language Storage Area / Kernal ROM */
+};
+static const rc_memory_regions_t rc_memory_regions_c64 = { _rc_memory_regions_c64, 7 };
+
+/* ===== Dreamcast ===== */
+/* http://archiv.sega-dc.de/munkeechuff/hardware/Memory.html */
+static const rc_memory_region_t _rc_memory_regions_dreamcast[] = {
+    { 0x00000000U, 0x00FFFFFFU, 0x0C000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }
+};
+static const rc_memory_regions_t rc_memory_regions_dreamcast = { _rc_memory_regions_dreamcast, 1 };
+
+/* ===== Elektor TV Games Computer ===== */
+/* https://amigan.yatho.com/e-coding.txt */
+static const rc_memory_region_t _rc_memory_regions_elektor_tv_games[] = {
+    { 0x000000U, 0x0013FFU, 0x000800U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    { 0x001400U, 0x0014FFU, 0x001C00U, RC_MEMORY_TYPE_UNUSED, "Unused" }, /* mirror of $1D00-$1DFF */
+    { 0x001500U, 0x0016FFU, 0x001D00U, RC_MEMORY_TYPE_HARDWARE_CONTROLLER, "I/O Area" }, /* two 256-byte I/O areas */
+    { 0x001700U, 0x0017FFU, 0x001F00U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+};
+static const rc_memory_regions_t rc_memory_regions_elektor_tv_games = { _rc_memory_regions_elektor_tv_games, 4 };
+
+/* ===== Fairchild Channel F ===== */
+static const rc_memory_region_t _rc_memory_regions_fairchild_channel_f[] = {
+    /* "System RAM" is actually just a bunch of registers internal to CPU so all carts have it.
+     * "Video RAM" is part of the console so it's always available but it is write-only by the ROMs.
+     * "Cartridge RAM" is the cart BUS. Most carts only have ROMs on this bus. Exception are
+     *     German Schach and homebrew carts that have 2K of RAM there in addition to ROM.
+     * "F2102 RAM" is used by Maze for 1K of RAM.
+     * https://discord.com/channels/310192285306454017/645777658319208448/967001438087708714 */
+    { 0x00000000U, 0x0000003FU, 0x00100000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    { 0x00000040U, 0x0000083FU, 0x00300000U, RC_MEMORY_TYPE_VIDEO_RAM, "Video RAM" },
+    { 0x00000840U, 0x0001083FU, 0x00000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Cartridge RAM" },
+    { 0x00010840U, 0x00010C3FU, 0x00200000U, RC_MEMORY_TYPE_SYSTEM_RAM, "F2102 RAM" }
+};
+static const rc_memory_regions_t rc_memory_regions_fairchild_channel_f = { _rc_memory_regions_fairchild_channel_f, 4 };
 
 /* ===== GameBoy / GameBoy Color ===== */
 static const rc_memory_region_t _rc_memory_regions_gameboy[] = {
@@ -362,6 +482,16 @@ static const rc_memory_region_t _rc_memory_regions_intellivision[] = {
     { 0x010080U, 0x04007FU, 0x004000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Cartridge RAM" },
 };
 static const rc_memory_regions_t rc_memory_regions_intellivision = { _rc_memory_regions_intellivision, 10 };
+
+/* ===== Interton VC 4000 ===== */
+/* https://amigan.yatho.com/i-coding.txt */
+/* Cartridge RAM is not persisted, it's just expanded storage */
+static const rc_memory_region_t _rc_memory_regions_interton_vc_4000[] = {
+    { 0x000000U, 0x0003FFU, 0x001800U, RC_MEMORY_TYPE_SYSTEM_RAM, "Cartridge RAM" },
+    { 0x000400U, 0x0004FFU, 0x001E00U, RC_MEMORY_TYPE_HARDWARE_CONTROLLER, "I/O Area" },
+    { 0x000500U, 0x0005FFU, 0x001F00U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }, 
+};
+static const rc_memory_regions_t rc_memory_regions_interton_vc_4000 = { _rc_memory_regions_interton_vc_4000, 3 };
 
 /* ===== Magnavox Odyssey 2 ===== */
 /* https://sudonull.com/post/76885-Architecture-and-programming-Philips-Videopac-Magnavox-Odyssey-2 */
@@ -502,9 +632,18 @@ static const rc_memory_regions_t rc_memory_regions_playstation = { _rc_memory_re
 /* https://psi-rockin.github.io/ps2tek/ */
 static const rc_memory_region_t _rc_memory_regions_playstation2[] = {
     { 0x00000000U, 0x000FFFFFU, 0x00000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Kernel RAM" },
-    { 0x00100000U, 0x01FFFFFFU, 0x00100000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" }
+    { 0x00100000U, 0x01FFFFFFU, 0x00100000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    { 0x02000000U, 0x02003FFFU, 0x70000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Scratchpad RAM" },
 };
-static const rc_memory_regions_t rc_memory_regions_playstation2 = { _rc_memory_regions_playstation2, 2 };
+static const rc_memory_regions_t rc_memory_regions_playstation2 = { _rc_memory_regions_playstation2, 3 };
+
+/* ===== PlayStation Portable ===== */
+/* https://github.com/uofw/upspd/wiki/Memory-map */
+static const rc_memory_region_t _rc_memory_regions_psp[] = {
+    { 0x00000000U, 0x007FFFFFU, 0x08000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "Kernel RAM" },
+    { 0x00800000U, 0x01FFFFFFU, 0x08800000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+};
+static const rc_memory_regions_t rc_memory_regions_psp = { _rc_memory_regions_psp, 2 };
 
 /* ===== Pokemon Mini ===== */
 /* https://www.pokemon-mini.net/documentation/memory-map/ */
@@ -611,6 +750,17 @@ static const rc_memory_region_t _rc_memory_regions_watara_supervision[] = {
 };
 static const rc_memory_regions_t rc_memory_regions_watara_supervision = { _rc_memory_regions_watara_supervision, 3 };
 
+/* ===== WASM-4 ===== */
+/* fantasy console that runs specifically designed WebAssembly games */
+/* https://github.com/aduros/wasm4/blob/main/site/docs/intro.md#hardware-specs */
+static const rc_memory_region_t _rc_memory_regions_wasm4[] = {
+    { 0x000000U, 0x00FFFFU, 0x00000000U, RC_MEMORY_TYPE_SYSTEM_RAM, "System RAM" },
+    /* Persistent storage is not directly accessible from the game. It has to be loaded into System RAM first
+    { 0x010000U, 0x0103FFU, 0x80000000U, RC_MEMORY_TYPE_SAVE_RAM, "Disk Storage"}
+    */
+};
+static const rc_memory_regions_t rc_memory_regions_wasm4 = { _rc_memory_regions_wasm4, 1 };
+
 /* ===== WonderSwan ===== */
 /* http://daifukkat.su/docs/wsman/#ovr_memmap */
 static const rc_memory_region_t _rc_memory_regions_wonderswan[] = {
@@ -638,8 +788,20 @@ const rc_memory_regions_t* rc_console_memory_regions(int console_id)
     case RC_CONSOLE_3DO:
       return &rc_memory_regions_3do;
 
+    case RC_CONSOLE_AMIGA:
+      return &rc_memory_regions_amiga;
+
+    case RC_CONSOLE_AMSTRAD_PC:
+      return &rc_memory_regions_amstrad_pc;
+
     case RC_CONSOLE_APPLE_II:
       return &rc_memory_regions_appleii;
+
+    case RC_CONSOLE_ARCADIA_2001:
+      return &rc_memory_regions_arcadia_2001;
+
+    case RC_CONSOLE_ARDUBOY:
+      return &rc_memory_regions_arduboy;
 
     case RC_CONSOLE_ATARI_2600:
       return &rc_memory_regions_atari2600;
@@ -656,6 +818,19 @@ const rc_memory_regions_t* rc_console_memory_regions(int console_id)
     case RC_CONSOLE_COLECOVISION:
       return &rc_memory_regions_colecovision;
 
+    case RC_CONSOLE_COMMODORE_64:
+      return &rc_memory_regions_c64;
+
+    case RC_CONSOLE_DREAMCAST:
+      return &rc_memory_regions_dreamcast;
+
+    case RC_CONSOLE_ELEKTOR_TV_GAMES_COMPUTER:
+      return &rc_memory_regions_elektor_tv_games;
+
+    case RC_CONSOLE_FAIRCHILD_CHANNEL_F:
+      return &rc_memory_regions_fairchild_channel_f;
+
+    case RC_CONSOLE_MEGADUCK:
     case RC_CONSOLE_GAMEBOY:
       return &rc_memory_regions_gameboy;
 
@@ -670,6 +845,9 @@ const rc_memory_regions_t* rc_console_memory_regions(int console_id)
 
     case RC_CONSOLE_INTELLIVISION:
       return &rc_memory_regions_intellivision;
+
+    case RC_CONSOLE_INTERTON_VC_4000:
+      return &rc_memory_regions_interton_vc_4000;
 
     case RC_CONSOLE_MAGNAVOX_ODYSSEY2:
       return &rc_memory_regions_magnavox_odyssey_2;
@@ -716,6 +894,9 @@ const rc_memory_regions_t* rc_console_memory_regions(int console_id)
     case RC_CONSOLE_PLAYSTATION_2:
       return &rc_memory_regions_playstation2;
 
+    case RC_CONSOLE_PSP:
+      return &rc_memory_regions_psp;
+
     case RC_CONSOLE_POKEMON_MINI:
       return &rc_memory_regions_pokemini;
 
@@ -748,6 +929,9 @@ const rc_memory_regions_t* rc_console_memory_regions(int console_id)
 
     case RC_CONSOLE_VIRTUAL_BOY:
       return &rc_memory_regions_virtualboy;
+
+    case RC_CONSOLE_WASM4:
+      return &rc_memory_regions_wasm4;
 
     case RC_CONSOLE_WONDERSWAN:
       return &rc_memory_regions_wonderswan;

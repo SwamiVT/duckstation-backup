@@ -1,29 +1,28 @@
 #include "postprocessingsettingswidget.h"
-#include "qthostinterface.h"
+#include "qthost.h"
 #include "settingwidgetbinder.h"
 #include <QtWidgets/QMessageBox>
 
-PostProcessingSettingsWidget::PostProcessingSettingsWidget(QtHostInterface* host_interface, QWidget* parent,
-                                                           SettingsDialog* settings_dialog)
-  : QWidget(parent), m_host_interface(host_interface)
+PostProcessingSettingsWidget::PostProcessingSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+  : QWidget(parent), m_dialog(dialog)
 {
+  SettingsInterface* sif = dialog->getSettingsInterface();
+
   m_ui.setupUi(this);
   m_ui.widget->setOptionsButtonVisible(false);
   m_ui.reload->setEnabled(false);
   updateShaderConfigPanel(-1);
   connectUi();
 
-  SettingWidgetBinder::BindWidgetToBoolSetting(host_interface, m_ui.enablePostProcessing, "Display", "PostProcessing",
-                                               false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enablePostProcessing, "Display", "PostProcessing", false);
 
-  std::string post_chain = m_host_interface->GetStringSettingValue("Display", "PostProcessChain");
+  std::string post_chain = m_dialog->getStringValue("Display", "PostProcessChain", "").value_or(std::string());
   if (!post_chain.empty())
   {
     if (!m_ui.widget->setConfigString(post_chain))
     {
-      QMessageBox::critical(this, tr("Error"),
-                            tr("The current post-processing chain is invalid, it has been reset. Any changes made will "
-                               "overwrite the existing config."));
+      QMessageBox::critical(this, tr("Error"), tr("The current post-processing chain is invalid, it has been reset."));
+      m_dialog->removeSettingValue("Display", "PostProcessChain");
     }
     else
     {
@@ -57,10 +56,11 @@ void PostProcessingSettingsWidget::onChainSelectedShaderChanged(qint32 index)
 
 void PostProcessingSettingsWidget::updateShaderConfigPanel(s32 index)
 {
+  m_ui.scrollArea->setWidget(nullptr);
+  m_ui.scrollArea->setVisible(false);
+
   if (m_shader_config)
   {
-    m_ui.scrollArea->setWidget(nullptr);
-    m_ui.scrollArea->setVisible(false);
     delete m_shader_config;
     m_shader_config = nullptr;
   }
@@ -83,19 +83,17 @@ void PostProcessingSettingsWidget::onConfigChanged(const std::string& new_config
 {
   if (new_config.empty())
   {
-    m_host_interface->RemoveSettingValue("Display", "PostProcessChain");
+    m_dialog->removeSettingValue("Display", "PostProcessChain");
     m_ui.reload->setEnabled(false);
   }
   else
   {
-    m_host_interface->SetStringSettingValue("Display", "PostProcessChain", new_config.c_str());
+    m_dialog->setStringSettingValue("Display", "PostProcessChain", new_config.c_str());
     m_ui.reload->setEnabled(true);
   }
-
-  m_host_interface->applySettings();
 }
 
 void PostProcessingSettingsWidget::onReloadClicked()
 {
-  m_host_interface->reloadPostProcessingShaders();
+  g_emu_thread->reloadPostProcessingShaders();
 }

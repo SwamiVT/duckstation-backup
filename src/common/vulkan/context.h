@@ -1,12 +1,8 @@
-// Copyright 2016 Dolphin Emulator Project
-// Copyright 2020 DuckStation Emulator Project
-// Licensed under GPLv2+
-// Refer to the LICENSE file included.
-
 #pragma once
 
 #include "../types.h"
-#include "vulkan_loader.h"
+#include "loader.h"
+#include "stream_buffer.h"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -30,6 +26,12 @@ public:
   enum : u32
   {
     NUM_COMMAND_BUFFERS = 2
+  };
+
+  struct OptionalExtensions
+  {
+    bool vk_ext_memory_budget : 1;
+    bool vk_khr_driver_properties : 1;
   };
 
   ~Context();
@@ -70,6 +72,7 @@ public:
   ALWAYS_INLINE VkInstance GetVulkanInstance() const { return m_instance; }
   ALWAYS_INLINE VkPhysicalDevice GetPhysicalDevice() const { return m_physical_device; }
   ALWAYS_INLINE VkDevice GetDevice() const { return m_device; }
+  ALWAYS_INLINE VmaAllocator GetAllocator() const { return m_allocator; }
   ALWAYS_INLINE VkQueue GetGraphicsQueue() const { return m_graphics_queue; }
   ALWAYS_INLINE u32 GetGraphicsQueueFamilyIndex() const { return m_graphics_queue_family_index; }
   ALWAYS_INLINE VkQueue GetPresentQueue() const { return m_present_queue; }
@@ -85,37 +88,41 @@ public:
   ALWAYS_INLINE const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
   ALWAYS_INLINE const VkPhysicalDeviceFeatures& GetDeviceFeatures() const { return m_device_features; }
   ALWAYS_INLINE const VkPhysicalDeviceLimits& GetDeviceLimits() const { return m_device_properties.limits; }
+  ALWAYS_INLINE const VkPhysicalDeviceDriverProperties& GetDeviceDriverProperties() const
+  {
+    return m_device_driver_properties;
+  }
 
   // Support bits
   ALWAYS_INLINE bool SupportsGeometryShaders() const { return m_device_features.geometryShader == VK_TRUE; }
   ALWAYS_INLINE bool SupportsDualSourceBlend() const { return m_device_features.dualSrcBlend == VK_TRUE; }
 
   // Helpers for getting constants
-  ALWAYS_INLINE VkDeviceSize GetUniformBufferAlignment() const
+  ALWAYS_INLINE u32 GetUniformBufferAlignment() const
   {
-    return m_device_properties.limits.minUniformBufferOffsetAlignment;
+    return static_cast<u32>(m_device_properties.limits.minUniformBufferOffsetAlignment);
   }
-  ALWAYS_INLINE VkDeviceSize GetTexelBufferAlignment() const
+  ALWAYS_INLINE u32 GetTexelBufferAlignment() const
   {
-    return m_device_properties.limits.minTexelBufferOffsetAlignment;
+    return static_cast<u32>(m_device_properties.limits.minTexelBufferOffsetAlignment);
   }
-  ALWAYS_INLINE VkDeviceSize GetStorageBufferAlignment() const
+  ALWAYS_INLINE u32 GetStorageBufferAlignment() const
   {
-    return m_device_properties.limits.minStorageBufferOffsetAlignment;
+    return static_cast<u32>(m_device_properties.limits.minStorageBufferOffsetAlignment);
   }
-  ALWAYS_INLINE VkDeviceSize GetBufferImageGranularity() const
+  ALWAYS_INLINE u32 GetBufferImageGranularity() const
   {
-    return m_device_properties.limits.bufferImageGranularity;
+    return static_cast<u32>(m_device_properties.limits.bufferImageGranularity);
   }
-
-  // Finds a memory type index for the specified memory properties and the bits returned by
-  // vkGetImageMemoryRequirements
-  bool GetMemoryType(u32 bits, VkMemoryPropertyFlags properties, u32* out_type_index);
-  u32 GetMemoryType(u32 bits, VkMemoryPropertyFlags properties);
-
-  // Finds a memory type for upload or readback buffers.
-  u32 GetUploadMemoryType(u32 bits, bool* is_coherent = nullptr);
-  u32 GetReadbackMemoryType(u32 bits, bool* is_coherent = nullptr, bool* is_cached = nullptr);
+  ALWAYS_INLINE u32 GetBufferCopyOffsetAlignment() const
+  {
+    return static_cast<u32>(m_device_properties.limits.optimalBufferCopyOffsetAlignment);
+  }
+  ALWAYS_INLINE u32 GetBufferCopyRowPitchAlignment() const
+  {
+    return static_cast<u32>(m_device_properties.limits.optimalBufferCopyRowPitchAlignment);
+  }
+  ALWAYS_INLINE u32 GetMaxImageDimension2D() const { return m_device_properties.limits.maxImageDimension2D; }
 
   // Creates a simple render pass.
   VkRenderPass GetRenderPass(VkFormat color_format, VkFormat depth_format, VkSampleCountFlagBits samples,
@@ -125,6 +132,7 @@ public:
   // is submitted, after that you should call these functions again.
   ALWAYS_INLINE VkDescriptorPool GetGlobalDescriptorPool() const { return m_global_descriptor_pool; }
   ALWAYS_INLINE VkCommandBuffer GetCurrentCommandBuffer() const { return m_current_command_buffer; }
+  ALWAYS_INLINE StreamBuffer& GetTextureUploadBuffer() { return m_texture_upload_buffer; }
   ALWAYS_INLINE VkDescriptorPool GetCurrentDescriptorPool() const
   {
     return m_frame_resources[m_current_frame].descriptor_pool;
@@ -167,10 +175,12 @@ public:
   // Schedule a vulkan resource for destruction later on. This will occur when the command buffer
   // is next re-used, and the GPU has finished working with the specified resource.
   void DeferBufferDestruction(VkBuffer object);
+  void DeferBufferDestruction(VkBuffer object, VmaAllocation allocation);
   void DeferBufferViewDestruction(VkBufferView object);
   void DeferDeviceMemoryDestruction(VkDeviceMemory object);
   void DeferFramebufferDestruction(VkFramebuffer object);
   void DeferImageDestruction(VkImage object);
+  void DeferImageDestruction(VkImage object, VmaAllocation allocation);
   void DeferImageViewDestruction(VkImageView object);
   void DeferPipelineDestruction(VkPipeline pipeline);
 
@@ -179,6 +189,9 @@ public:
   void WaitForFenceCounter(u64 fence_counter);
 
   void WaitForGPUIdle();
+
+  float GetAndResetAccumulatedGPUTime();
+  bool SetEnableGPUTiming(bool enabled);
 
 private:
   Context(VkInstance instance, VkPhysicalDevice physical_device, bool owns_device);
@@ -190,11 +203,15 @@ private:
   bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer, const char** required_device_extensions,
                     u32 num_required_device_extensions, const char** required_device_layers,
                     u32 num_required_device_layers, const VkPhysicalDeviceFeatures* required_features);
+  void ProcessDeviceExtensions();
 
+  bool CreateAllocator();
+  void DestroyAllocator();
   bool CreateCommandBuffers();
   void DestroyCommandBuffers();
   bool CreateGlobalDescriptorPool();
   void DestroyGlobalDescriptorPool();
+  bool CreateTextureStreamBuffer();
   void DestroyRenderPassCache();
 
   void ActivateCommandBuffer(u32 index);
@@ -216,6 +233,7 @@ private:
     VkFence fence = VK_NULL_HANDLE;
     u64 fence_counter = 0;
     bool needs_fence_wait = false;
+    bool timestamp_written = false;
 
     std::vector<std::function<void()>> cleanup_resources;
   };
@@ -223,6 +241,7 @@ private:
   VkInstance m_instance = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
   VkDevice m_device = VK_NULL_HANDLE;
+  VmaAllocator m_allocator = VK_NULL_HANDLE;
 
   VkCommandBuffer m_current_command_buffer = VK_NULL_HANDLE;
 
@@ -233,12 +252,17 @@ private:
   VkQueue m_present_queue = VK_NULL_HANDLE;
   u32 m_present_queue_family_index = 0;
 
+  VkQueryPool m_timestamp_query_pool = VK_NULL_HANDLE;
+  float m_accumulated_gpu_time = 0.0f;
+  bool m_gpu_timing_enabled = false;
+  bool m_gpu_timing_supported = false;
+
   std::array<FrameResources, NUM_COMMAND_BUFFERS> m_frame_resources;
   u64 m_next_fence_counter = 1;
   u64 m_completed_fence_counter = 0;
   u32 m_current_frame;
 
-  bool m_owns_device = false;
+  StreamBuffer m_texture_upload_buffer;
 
   std::atomic_bool m_last_present_failed{false};
   std::atomic_bool m_present_done{true};
@@ -269,6 +293,8 @@ private:
   VkPhysicalDeviceFeatures m_device_features = {};
   VkPhysicalDeviceProperties m_device_properties = {};
   VkPhysicalDeviceMemoryProperties m_device_memory_properties = {};
+  VkPhysicalDeviceDriverPropertiesKHR m_device_driver_properties = {};
+  OptionalExtensions m_optional_extensions = {};
 };
 
 } // namespace Vulkan
