@@ -5,6 +5,7 @@
 #include "common/assert.h"
 #include "common/file_system.h"
 #include "common/log.h"
+#include "core/achievements.h"
 #include "core/host.h"
 #include "core/host_display.h"
 #include "core/memory_card.h"
@@ -293,7 +294,7 @@ bool MainWindow::updateDisplay(bool fullscreen, bool render_to_main, bool surfac
 
   g_host_display->DestroyRenderSurface();
 
-  destroyDisplayWidget(surfaceless);
+  destroyDisplayWidget(surfaceless || fullscreen);
 
   // if we're going to surfaceless, we're done here
   if (surfaceless)
@@ -703,7 +704,7 @@ std::string MainWindow::getDeviceDiscPath(const QString& title)
 void MainWindow::recreate()
 {
   if (s_system_valid)
-    requestShutdown(false, true, true);
+    requestShutdown(false, true, true, true);
 
   // We need to close input sources, because e.g. DInput uses our window handle.
   g_emu_thread->closeInputSources();
@@ -1435,7 +1436,7 @@ void MainWindow::setupAdditionalUi()
   m_ui.actionViewStatusBar->setChecked(status_bar_visible);
   m_ui.statusBar->setVisible(status_bar_visible);
 
-  const bool toolbar_visible = Host::GetBaseBoolSettingValue("UI", "ShowToolbar", true);
+  const bool toolbar_visible = Host::GetBaseBoolSettingValue("UI", "ShowToolbar", false);
   m_ui.actionViewToolbar->setChecked(toolbar_visible);
   m_ui.toolBar->setVisible(toolbar_visible);
 
@@ -1786,7 +1787,7 @@ bool MainWindow::isRenderingToMain() const
 bool MainWindow::shouldHideMouseCursor() const
 {
   return m_hide_mouse_cursor ||
-         (isRenderingFullscreen() && Host::GetBoolSettingValue("Main", "HideCursorInFullscreen", false));
+         (isRenderingFullscreen() && Host::GetBoolSettingValue("Main", "HideCursorInFullscreen", true));
 }
 
 bool MainWindow::shouldHideMainWindow() const
@@ -1803,7 +1804,7 @@ void MainWindow::switchToGameListView()
     return;
   }
 
-  if (s_system_valid)
+  if (m_display_created)
   {
     m_was_paused_on_surface_loss = s_system_paused;
     if (!s_system_paused)
@@ -2450,7 +2451,7 @@ bool MainWindow::requestShutdown(bool allow_confirm /* = true */, bool allow_sav
     QMessageBox msgbox(lock.getDialogParent());
     msgbox.setIcon(QMessageBox::Question);
     msgbox.setWindowTitle(tr("Confirm Shutdown"));
-    msgbox.setText("Are you sure you want to shut down the virtual machine?");
+    msgbox.setText(tr("Are you sure you want to shut down the virtual machine?"));
 
     QCheckBox* save_cb = new QCheckBox(tr("Save State For Resume"), &msgbox);
     save_cb->setChecked(allow_save_to_state && save_state);
@@ -2517,6 +2518,13 @@ void MainWindow::checkForSettingChanges()
 #endif
 
   updateWindowState();
+}
+
+void MainWindow::getWindowInfo(WindowInfo* wi)
+{
+  std::optional<WindowInfo> opt_wi(QtUtils::GetWindowInfoForWidget(this));
+  if (opt_wi.has_value())
+    *wi = opt_wi.value();
 }
 
 void MainWindow::onCheckForUpdatesActionTriggered()
@@ -2739,7 +2747,16 @@ MainWindow::SystemLock MainWindow::pauseAndLockSystem()
   if (was_fullscreen)
     g_emu_thread->setSurfaceless(true);
   if (!was_paused)
+  {
     g_emu_thread->setSystemPaused(true);
+
+    // Need to wait for the pause to go through, and make the main window visible if needed.
+    while (!s_system_paused)
+      QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 1);
+
+    // Ensure it's visible before we try to create any dialogs parented to us.
+    QApplication::sync();
+  }
 
   // We want to parent dialogs to the display widget, except if we were fullscreen,
   // since it's going to get destroyed by the surfaceless call above.
