@@ -1,15 +1,17 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
-#include "common/bitfield.h"
+
 #include "types.h"
+
+#include "common/bitfield.h"
+#include "common/bitutils.h"
+
 #include <optional>
 
 namespace CPU {
 
-// Memory address mask used for fetching as well as loadstores (removes cached/uncached/user/kernel bits).
-enum : PhysicalMemoryAddress
-{
-  PHYSICAL_MEMORY_ADDRESS_MASK = 0x1FFFFFFF
-};
 enum : u32
 {
   INSTRUCTION_SIZE = sizeof(u32)
@@ -57,12 +59,8 @@ enum class Reg : u8
   sp,
   fp,
   ra,
-
-  // not accessible to instructions
   hi,
   lo,
-  pc,
-  npc,
 
   count
 };
@@ -112,9 +110,6 @@ enum class InstructionOp : u8
   swc2 = 58,
   swc3 = 59,
 };
-constexpr u8 INSTRUCTION_COP_BITS = 0x10;
-constexpr u8 INSTRUCTION_COP_MASK = 0x3C;
-constexpr u8 INSTRUCTION_COP_N_MASK = 0x03;
 
 enum class InstructionFunct : u8
 {
@@ -173,12 +168,15 @@ union Instruction
 
   union
   {
+    u32 bits;
     BitField<u32, Reg, 21, 5> rs;
     BitField<u32, Reg, 16, 5> rt;
     BitField<u32, u16, 0, 16> imm;
 
-    ALWAYS_INLINE u32 imm_sext32() const { return SignExtend32(imm.GetValue()); }
-    ALWAYS_INLINE u32 imm_zext32() const { return ZeroExtend32(imm.GetValue()); }
+    ALWAYS_INLINE s16 imm_s16() const { return static_cast<s16>(bits); }
+    ALWAYS_INLINE u16 imm_u16() const { return static_cast<u16>(bits); }
+    ALWAYS_INLINE u32 imm_sext32() const { return static_cast<u32>(static_cast<s32>(imm_s16())); }
+    ALWAYS_INLINE u32 imm_zext32() const { return static_cast<u32>(imm_u16()); }
   } i;
 
   union
@@ -188,6 +186,7 @@ union Instruction
 
   union
   {
+    u32 bits;
     BitField<u32, Reg, 21, 5> rs;
     BitField<u32, Reg, 16, 5> rt;
     BitField<u32, Reg, 11, 5> rd;
@@ -210,34 +209,29 @@ union Instruction
     }
 
     ALWAYS_INLINE Cop0Instruction Cop0Op() const { return static_cast<Cop0Instruction>(bits & UINT32_C(0x3F)); }
+    ALWAYS_INLINE u32 Cop2Index() const { return ((bits >> 11) & 0x1F) | ((bits >> 17) & 0x20); }
   } cop;
-
-  bool IsCop2Instruction() const
-  {
-    return (op == InstructionOp::cop2 || op == InstructionOp::lwc2 || op == InstructionOp::swc2);
-  }
 };
 
 // Instruction helpers.
-bool IsNopInstruction(const Instruction& instruction);
-bool IsBranchInstruction(const Instruction& instruction);
-bool IsUnconditionalBranchInstruction(const Instruction& instruction);
-bool IsDirectBranchInstruction(const Instruction& instruction);
-VirtualMemoryAddress GetDirectBranchTarget(const Instruction& instruction, VirtualMemoryAddress instruction_pc);
-bool IsCallInstruction(const Instruction& instruction);
-bool IsReturnInstruction(const Instruction& instruction);
-bool IsMemoryLoadInstruction(const Instruction& instruction);
-bool IsMemoryStoreInstruction(const Instruction& instruction);
-bool InstructionHasLoadDelay(const Instruction& instruction);
-bool IsExitBlockInstruction(const Instruction& instruction);
-bool CanInstructionTrap(const Instruction& instruction, bool in_user_mode);
-bool IsInvalidInstruction(const Instruction& instruction);
+bool IsNopInstruction(const Instruction instruction);
+bool IsBranchInstruction(const Instruction instruction);
+bool IsUnconditionalBranchInstruction(const Instruction instruction);
+bool IsDirectBranchInstruction(const Instruction instruction);
+VirtualMemoryAddress GetDirectBranchTarget(const Instruction instruction, VirtualMemoryAddress instruction_pc);
+bool IsCallInstruction(const Instruction instruction);
+bool IsReturnInstruction(const Instruction instruction);
+bool IsMemoryLoadInstruction(const Instruction instruction);
+bool IsMemoryStoreInstruction(const Instruction instruction);
+bool InstructionHasLoadDelay(const Instruction instruction);
+bool IsExitBlockInstruction(const Instruction instruction);
+bool IsValidInstruction(const Instruction instruction);
 
 struct Registers
 {
   union
   {
-    u32 r[static_cast<u8>(Reg::count)];
+    u32 r[static_cast<u8>(Reg::count) + 1]; // +1 for the dummy load delay write slot
 
     struct
     {
@@ -273,17 +267,13 @@ struct Registers
       u32 sp;   // r29
       u32 fp;   // r30
       u32 ra;   // r31
-
-      // not accessible to instructions
       u32 hi;
       u32 lo;
-      u32 pc;  // at execution time: the address of the next instruction to execute (already fetched)
-      u32 npc; // at execution time: the address of the next instruction to fetch
     };
   };
 };
 
-std::optional<VirtualMemoryAddress> GetLoadStoreEffectiveAddress(const Instruction& instruction, const Registers* regs);
+std::optional<VirtualMemoryAddress> GetLoadStoreEffectiveAddress(const Instruction instruction, const Registers* regs);
 
 enum class Cop0Reg : u8
 {

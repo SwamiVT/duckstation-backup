@@ -1,12 +1,21 @@
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "cd_image.h"
-#include "cd_subchannel_replacement.h"
+
 #include "common/assert.h"
+#include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
 #include "common/path.h"
+#include "common/progress_callback.h"
+
 #include <algorithm>
 #include <cerrno>
-Log_SetChannel(CDImageMemory);
+
+LOG_CHANNEL(CDImage);
+
+namespace {
 
 class CDImageMemory : public CDImage
 {
@@ -14,10 +23,7 @@ public:
   CDImageMemory();
   ~CDImageMemory() override;
 
-  bool CopyImage(CDImage* image, ProgressCallback* progress);
-
-  bool ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index) override;
-  bool HasNonStandardSubchannel() const override;
+  bool CopyImage(CDImage* image, ProgressCallback* progress, Error* error);
 
   bool IsPrecached() const override;
 
@@ -27,8 +33,9 @@ protected:
 private:
   u8* m_memory = nullptr;
   u32 m_memory_sectors = 0;
-  CDSubChannelReplacement m_sbi;
 };
+
+} // namespace
 
 CDImageMemory::CDImageMemory() = default;
 
@@ -38,7 +45,7 @@ CDImageMemory::~CDImageMemory()
     std::free(m_memory);
 }
 
-bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
+bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress, Error* error)
 {
   // figure out the total number of sectors (not including blank pregaps)
   m_memory_sectors = 0;
@@ -49,24 +56,24 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
       m_memory_sectors += image->GetIndex(i).length;
   }
 
-  if ((static_cast<u64>(RAW_SECTOR_SIZE) * static_cast<u64>(m_memory_sectors)) >=
-      static_cast<u64>(std::numeric_limits<size_t>::max()))
+  if (m_memory_sectors == 0 || (static_cast<u64>(RAW_SECTOR_SIZE) * static_cast<u64>(m_memory_sectors)) >=
+                                 static_cast<u64>(std::numeric_limits<size_t>::max()))
   {
-    progress->DisplayFormattedModalError("Insufficient address space");
+    Error::SetStringView(error, "Insufficient address space");
     return false;
   }
 
-  progress->SetFormattedStatusText("Allocating memory for %u sectors...", m_memory_sectors);
+  progress->FormatStatusText("Allocating memory for {} sectors...", m_memory_sectors);
 
   m_memory =
     static_cast<u8*>(std::malloc(static_cast<size_t>(RAW_SECTOR_SIZE) * static_cast<size_t>(m_memory_sectors)));
   if (!m_memory)
   {
-    progress->DisplayFormattedModalError("Failed to allocate memory for %u sectors", m_memory_sectors);
+    Error::SetStringFmt(error, "Failed to allocate memory for {} sectors", m_memory_sectors);
     return false;
   }
 
-  progress->SetStatusText("Preloading CD image to RAM...");
+  progress->SetTitle("Preloading CD image to RAM...");
   progress->SetProgressRange(m_memory_sectors);
   progress->SetProgressValue(0);
 
@@ -82,7 +89,7 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
     {
       if (!image->ReadSectorFromIndex(memory_ptr, index, lba))
       {
-        Log_ErrorPrintf("Failed to read LBA %u in index %u", lba, i);
+        ERROR_LOG("Failed to read LBA {} in index {}", lba, i);
         return false;
       }
 
@@ -109,25 +116,10 @@ bool CDImageMemory::CopyImage(CDImage* image, ProgressCallback* progress)
   }
 
   Assert(current_offset == m_memory_sectors);
-  m_filename = image->GetFileName();
+  m_filename = image->GetPath();
   m_lba_count = image->GetLBACount();
 
-  m_sbi.LoadSBI(Path::ReplaceExtension(m_filename, "sbi").c_str());
-
   return Seek(1, Position{0, 0, 0});
-}
-
-bool CDImageMemory::ReadSubChannelQ(SubChannelQ* subq, const Index& index, LBA lba_in_index)
-{
-  if (m_sbi.GetReplacementSubChannelQ(index.start_lba_on_disc + lba_in_index, subq))
-    return true;
-
-  return CDImage::ReadSubChannelQ(subq, index, lba_in_index);
-}
-
-bool CDImageMemory::HasNonStandardSubchannel() const
-{
-  return (m_sbi.GetReplacementSectorCount() > 0);
 }
 
 bool CDImageMemory::IsPrecached() const
@@ -148,11 +140,10 @@ bool CDImageMemory::ReadSectorFromIndex(void* buffer, const Index& index, LBA lb
   return true;
 }
 
-std::unique_ptr<CDImage>
-CDImage::CreateMemoryImage(CDImage* image, ProgressCallback* progress /* = ProgressCallback::NullProgressCallback */)
+std::unique_ptr<CDImage> CDImage::CreateMemoryImage(CDImage* image, ProgressCallback* progress, Error* error)
 {
   std::unique_ptr<CDImageMemory> memory_image = std::make_unique<CDImageMemory>();
-  if (!memory_image->CopyImage(image, progress))
+  if (!memory_image->CopyImage(image, progress, error))
     return {};
 
   return memory_image;

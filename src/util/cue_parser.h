@@ -1,7 +1,14 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
+
 #include "cd_image.h"
+
 #include "common/types.h"
+
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -23,7 +30,7 @@ enum : s32
   MAX_INDEX_NUMBER = 99
 };
 
-enum class TrackFlag : u32
+enum class TrackFlag : u8
 {
   PreEmphasis = (1 << 0),
   CopyPermitted = (1 << 1),
@@ -31,13 +38,21 @@ enum class TrackFlag : u32
   SerialCopyManagement = (1 << 3),
 };
 
+enum class FileFormat : u8
+{
+  Binary,
+  Wave,
+  MaxCount
+};
+
 struct Track
 {
-  u32 number;
-  u32 flags;
+  u8 number;
+  u8 flags;
+  TrackMode mode;
+  FileFormat file_format;
   std::string file;
   std::vector<std::pair<u32, MSF>> indices;
-  TrackMode mode;
   MSF start;
   std::optional<MSF> length;
   std::optional<MSF> zero_pregap;
@@ -57,29 +72,30 @@ public:
 
   const Track* GetTrack(u32 n) const;
 
-  bool Parse(std::FILE* fp, Common::Error* error);
+  bool Parse(std::FILE* fp, Error* error);
+  bool Parse(const std::string& buffer, Error* error);
 
 private:
   Track* GetMutableTrack(u32 n);
 
-  void SetError(u32 line_number, Common::Error* error, const char* format, ...);
+  void SetError(u32 line_number, Error* error, const char* format, ...);
 
   static std::string_view GetToken(const char*& line);
-  static std::optional<MSF> GetMSF(const std::string_view& token);
+  static std::optional<MSF> GetMSF(std::string_view token);
 
-  bool ParseLine(const char* line, u32 line_number, Common::Error* error);
+  bool ParseLine(const char* line, u32 line_number, Error* error);
 
-  bool HandleFileCommand(const char* line, u32 line_number, Common::Error* error);
-  bool HandleTrackCommand(const char* line, u32 line_number, Common::Error* error);
-  bool HandleIndexCommand(const char* line, u32 line_number, Common::Error* error);
-  bool HandlePregapCommand(const char* line, u32 line_number, Common::Error* error);
-  bool HandleFlagCommand(const char* line, u32 line_number, Common::Error* error);
+  bool HandleFileCommand(const char* line, u32 line_number, Error* error);
+  bool HandleTrackCommand(const char* line, u32 line_number, Error* error);
+  bool HandleIndexCommand(const char* line, u32 line_number, Error* error);
+  bool HandlePregapCommand(const char* line, u32 line_number, Error* error);
+  bool HandleFlagCommand(const char* line, u32 line_number, Error* error);
 
-  bool CompleteLastTrack(u32 line_number, Common::Error* error);
-  bool SetTrackLengths(u32 line_number, Common::Error* error);
+  bool CompleteLastTrack(u32 line_number, Error* error);
+  bool SetTrackLengths(u32 line_number, Error* error);
 
   std::vector<Track> m_tracks;
-  std::optional<std::string> m_current_file;
+  std::optional<std::pair<std::string, FileFormat>> m_current_file;
   std::optional<Track> m_current_track;
 };
 

@@ -3,9 +3,12 @@
 IFS="
 "
 
+# Avoid different platforms generating different order.
+export LC_ALL=C
+
 printf "<RCC>\n"
 printf "\t<qresource>\n"
-for i in $(find . -not -iname '*.sh' -not -iname '*.qrc' -type f | cut -d'/' -f2-99); do
+for i in $(find . -not -iname '*.sh' -not -iname '*.qrc' -type f | cut -d'/' -f2-99 | sort); do
 	printf "\t\t<file>%s</file>\n" "$i"
 done
 printf "\t</qresource>\n"

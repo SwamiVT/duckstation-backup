@@ -1,25 +1,40 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "emulationsettingswidget.h"
-#include "common/make_array.h"
 #include "core/system.h"
 #include "qtutils.h"
-#include "settingsdialog.h"
+#include "settingswindow.h"
 #include "settingwidgetbinder.h"
-#include <QtWidgets/QMessageBox>
+
 #include <limits>
 
-EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget* parent)
+#include "moc_emulationsettingswidget.cpp"
+
+EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* dialog, QWidget* parent)
   : QWidget(parent), m_dialog(dialog)
 {
   SettingsInterface* sif = dialog->getSettingsInterface();
 
   m_ui.setupUi(this);
 
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vsync, "Display", "VSync", false);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.syncToHostRefreshRate, "Main", "SyncToHostRefreshRate", false);
-  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.displayAllFrames, "Display", "DisplayAllFrames", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.optimalFramePacing, "Display", "OptimalFramePacing",
+                                               Settings::DEFAULT_OPTIMAL_FRAME_PACING);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.preFrameSleep, "Display", "PreFrameSleep", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.skipPresentingDuplicateFrames, "Display",
+                                               "SkipPresentingDuplicateFrames", false);
+  SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.preFrameSleepBuffer, "Display", "PreFrameSleepBuffer",
+                                                Settings::DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.rewindEnable, "Main", "RewindEnable", false);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.useSoftwareRendererForMemoryStates, "GPU",
+                                               "UseSoftwareRendererForMemoryStates", false);
   SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.rewindSaveFrequency, "Main", "RewindFrequency", 10.0f);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.rewindSaveSlots, "Main", "RewindSaveSlots", 10);
   SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.runaheadFrames, "Main", "RunaheadFrameCount", 0);
+  SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.runaheadForAnalogInput, "Main", "RunaheadForAnalogInput",
+                                               false);
 
   const float effective_emulation_speed = m_dialog->getEffectiveFloatValue("Main", "EmulationSpeed", 1.0f);
   fillComboBoxWithEmulationSpeeds(m_ui.emulationSpeed, effective_emulation_speed);
@@ -40,7 +55,7 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
   fillComboBoxWithEmulationSpeeds(m_ui.fastForwardSpeed, effective_fast_forward_speed);
   if (m_dialog->isPerGameSettings() && !m_dialog->getFloatValue("Main", "FastForwardSpeed", std::nullopt).has_value())
   {
-    m_ui.emulationSpeed->setCurrentIndex(0);
+    m_ui.fastForwardSpeed->setCurrentIndex(0);
   }
   else
   {
@@ -55,7 +70,7 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
   fillComboBoxWithEmulationSpeeds(m_ui.turboSpeed, effective_turbo_speed);
   if (m_dialog->isPerGameSettings() && !m_dialog->getFloatValue("Main", "TurboSpeed", std::nullopt).has_value())
   {
-    m_ui.emulationSpeed->setCurrentIndex(0);
+    m_ui.turboSpeed->setCurrentIndex(0);
   }
   else
   {
@@ -65,8 +80,16 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
   }
   connect(m_ui.turboSpeed, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &EmulationSettingsWidget::onTurboSpeedIndexChanged);
+  connect(m_ui.vsync, &QCheckBox::checkStateChanged, this, &EmulationSettingsWidget::updateSkipDuplicateFramesEnabled);
+  connect(m_ui.syncToHostRefreshRate, &QCheckBox::checkStateChanged, this,
+          &EmulationSettingsWidget::updateSkipDuplicateFramesEnabled);
+  connect(m_ui.optimalFramePacing, &QCheckBox::checkStateChanged, this,
+          &EmulationSettingsWidget::onOptimalFramePacingChanged);
+  connect(m_ui.preFrameSleep, &QCheckBox::checkStateChanged, this, &EmulationSettingsWidget::onPreFrameSleepChanged);
 
-  connect(m_ui.rewindEnable, &QCheckBox::stateChanged, this, &EmulationSettingsWidget::updateRewind);
+  connect(m_ui.rewindEnable, &QCheckBox::checkStateChanged, this, &EmulationSettingsWidget::updateRewind);
+  connect(m_ui.useSoftwareRendererForMemoryStates, &QCheckBox::checkStateChanged, this,
+          &EmulationSettingsWidget::updateRewind);
   connect(m_ui.rewindSaveFrequency, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
           &EmulationSettingsWidget::updateRewind);
   connect(m_ui.rewindSaveSlots, QOverload<int>::of(&QSpinBox::valueChanged), this,
@@ -86,16 +109,37 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
     tr("Sets the turbo speed. This speed will be used when the turbo hotkey is pressed/toggled. Turboing will take "
        "priority over fast forwarding if both hotkeys are pressed/toggled."));
   dialog->registerWidgetHelp(
+    m_ui.vsync, tr("Vertical Sync (VSync)"), tr("Unchecked"),
+    tr("Synchronizes presentation of the console's frames to the host. Enabling may result in smoother animations, at "
+       "the cost of increased input lag. <strong>GSync/FreeSync users should enable Optimal Frame Pacing "
+       "instead.</strong>"));
+  dialog->registerWidgetHelp(
     m_ui.syncToHostRefreshRate, tr("Sync To Host Refresh Rate"), tr("Unchecked"),
-    tr("Adjusts the emulation speed so the console's refresh rate matches the host's refresh rate when both VSync and "
-       "Audio Resampling settings are enabled. This results in the smoothest animations possible, at the cost of "
-       "potentially increasing the emulation speed by less than 1%. Sync To Host Refresh Rate will not take effect if "
-       "the console's refresh rate is too far from the host's refresh rate. Users with variable refresh rate displays "
-       "should disable this option."));
-  dialog->registerWidgetHelp(m_ui.displayAllFrames, tr("Optimal Frame Pacing"), tr("Unchecked"),
-                             tr("Enable this option will ensure every frame the console renders is displayed to the "
-                                "screen, for optimal frame pacing. If you are having difficulties maintaining full "
-                                "speed, or are getting audio glitches, try disabling this option."));
+    tr(
+      "Adjusts the emulation speed so the console's refresh rate matches the host's refresh rate when VSync is "
+      "enabled. This results in the smoothest animations possible, at the cost of potentially increasing the emulation "
+      "speed by less than 1%. Sync To Host Refresh Rate will not take effect if the console's refresh rate is too far "
+      "from the host's refresh rate. Users with variable refresh rate displays should disable this option."));
+  dialog->registerWidgetHelp(
+    m_ui.optimalFramePacing, tr("Optimal Frame Pacing"),
+    Settings::DEFAULT_OPTIMAL_FRAME_PACING ? tr("Checked") : tr("Unchecked"),
+    tr("Enabling this option will ensure every frame the console renders is displayed to the screen, at a consistent "
+       "rate, for optimal frame pacing. If you have a GSync/FreeSync display, enable this option. If you are having "
+       "difficulties maintaining full speed, or are getting audio glitches, try disabling this option."));
+  dialog->registerWidgetHelp(
+    m_ui.preFrameSleep, tr("Reduce Input Latency"), tr("Unchecked"),
+    tr("Reduces input latency by delaying the start of frame until closer to the presentation time. This may cause "
+       "dropped frames on slower systems with higher frame time variance, if the buffer size is not sufficient."));
+  dialog->registerWidgetHelp(m_ui.preFrameSleepBuffer, tr("Frame Time Buffer"),
+                             tr("%1 ms").arg(Settings::DEFAULT_DISPLAY_PRE_FRAME_SLEEP_BUFFER),
+                             tr("Specifies the amount of buffer time added, which reduces the additional sleep time "
+                                "introduced. Higher values increase input latency, but decrease the risk of overrun, "
+                                "or missed frames. Lower values require faster hardware."));
+  dialog->registerWidgetHelp(
+    m_ui.skipPresentingDuplicateFrames, tr("Skip Duplicate Frame Display"), tr("Unchecked"),
+    tr("Skips the presentation/display of frames that are not unique. Can be combined with driver-level frame "
+       "generation to increase perceptible frame rate. Can result in worse frame pacing, and is not compatible with "
+       "syncing to host refresh."));
   dialog->registerWidgetHelp(
     m_ui.rewindEnable, tr("Rewinding"), tr("Unchecked"),
     tr("<b>Enable Rewinding:</b> Saves state periodically so you can rewind any mistakes while playing.<br> "
@@ -103,11 +147,22 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsDialog* dialog, QWidget
        "requirements.<br> "
        "<b>Rewind Buffer Size:</b> How many saves will be kept for rewinding. Higher values have greater memory "
        "requirements."));
+  dialog->registerWidgetHelp(m_ui.useSoftwareRendererForMemoryStates, tr("Use Software Renderer (Low VRAM Mode)"),
+                             tr("Unchecked"),
+                             tr("Uses the software renderer when creating rewind states to prevent additional VRAM "
+                                "usage. Especially useful when upscaling, as this will significantly reduce the system "
+                                "requirements for rewinding."));
+
   dialog->registerWidgetHelp(
     m_ui.runaheadFrames, tr("Runahead"), tr("Disabled"),
     tr(
       "Simulates the system ahead of time and rolls back/replays to reduce input lag. Very high system requirements."));
+  dialog->registerWidgetHelp(
+    m_ui.runaheadForAnalogInput, tr("Enable for Analog Input"), tr("Unchecked"),
+    tr("Activates runahead when analog input changes, which significantly increases system requirements."));
 
+  onOptimalFramePacingChanged();
+  updateSkipDuplicateFramesEnabled();
   updateRewind();
 }
 
@@ -125,8 +180,8 @@ void EmulationSettingsWidget::fillComboBoxWithEmulationSpeeds(QComboBox* cb, flo
 
   cb->addItem(tr("Unlimited"), QVariant(0.0f));
 
-  static constexpr auto speeds = make_array(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200, 250, 300, 350,
-                                            400, 450, 500, 600, 700, 800, 900, 1000);
+  static constexpr const std::array speeds = {10,  20,  30,  40,  50,  60,  70,  80,  90,  100, 125, 150, 175,
+                                              200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000};
   for (const int speed : speeds)
   {
     cb->addItem(tr("%1% [%2 FPS (NTSC) / %3 FPS (PAL)]").arg(speed).arg((60 * speed) / 100).arg((50 * speed) / 100),
@@ -173,27 +228,62 @@ void EmulationSettingsWidget::onTurboSpeedIndexChanged(int index)
   m_dialog->setFloatSettingValue("Main", "TurboSpeed", okay ? value : 0.0f);
 }
 
+void EmulationSettingsWidget::onOptimalFramePacingChanged()
+{
+  const bool optimal_frame_pacing_enabled = m_dialog->getEffectiveBoolValue("Display", "OptimalFramePacing", false);
+  m_ui.preFrameSleep->setEnabled(optimal_frame_pacing_enabled);
+  onPreFrameSleepChanged();
+}
+
+void EmulationSettingsWidget::onPreFrameSleepChanged()
+{
+  const bool pre_frame_sleep_enabled = m_dialog->getEffectiveBoolValue("Display", "PreFrameSleep", false);
+  const bool show_buffer_size = (m_ui.preFrameSleep->isEnabled() && pre_frame_sleep_enabled);
+  m_ui.preFrameSleepBuffer->setVisible(show_buffer_size);
+  m_ui.preFrameSleepBufferLabel->setVisible(show_buffer_size);
+}
+
+void EmulationSettingsWidget::updateSkipDuplicateFramesEnabled()
+{
+  const bool vsync = m_dialog->getEffectiveBoolValue("Display", "VSync", false);
+  const bool sync_to_host = m_dialog->getEffectiveBoolValue("Main", "SyncToHostRefreshRate", false) && vsync;
+  m_ui.skipPresentingDuplicateFrames->setEnabled(!sync_to_host);
+}
+
 void EmulationSettingsWidget::updateRewind()
 {
   const bool rewind_enabled = m_dialog->getEffectiveBoolValue("Main", "RewindEnable", false);
   const bool runahead_enabled = m_dialog->getIntValue("Main", "RunaheadFrameCount", 0) > 0;
+  const bool rewind_active = (!runahead_enabled && rewind_enabled);
   m_ui.rewindEnable->setEnabled(!runahead_enabled);
+  m_ui.runaheadForAnalogInput->setEnabled(runahead_enabled);
+  m_ui.useSoftwareRendererForMemoryStates->setEnabled(rewind_active);
 
-  if (!runahead_enabled && rewind_enabled)
+  if (rewind_active)
   {
+    const u32 resolution_scale = static_cast<u32>(m_dialog->getEffectiveIntValue("GPU", "ResolutionScale", 1));
+    const u32 multisamples = m_dialog->getEffectiveIntValue("GPU", "Multisamples", 1);
+    const bool use_software_renderer =
+      m_dialog->getEffectiveBoolValue("GPU", "UseSoftwareRendererForMemoryStates", false);
+    const bool enable_8mb_ram = m_dialog->getEffectiveBoolValue("Console", "Enable8MBRAM", false);
     const u32 frames = static_cast<u32>(m_ui.rewindSaveSlots->value());
     const float frequency = static_cast<float>(m_ui.rewindSaveFrequency->value());
     const float duration =
       ((frequency <= std::numeric_limits<float>::epsilon()) ? (1.0f / 60.0f) : frequency) * static_cast<float>(frames);
 
     u64 ram_usage, vram_usage;
-    System::CalculateRewindMemoryUsage(frames, &ram_usage, &vram_usage);
+    System::CalculateRewindMemoryUsage(frames, resolution_scale, multisamples, use_software_renderer, enable_8mb_ram,
+                                       &ram_usage, &vram_usage);
 
     m_ui.rewindSummary->setText(
-      tr("Rewind for %n frame(s), lasting %1 second(s) will require up to %2MB of RAM and %3MB of VRAM.", "", frames)
-        .arg(duration)
-        .arg(ram_usage / 1048576)
-        .arg(vram_usage / 1048576));
+      (vram_usage > 0) ?
+        tr("Rewind for %n frame(s), lasting %1 second(s) will require %2MB of RAM and %3MB of VRAM.", "", frames)
+          .arg(duration)
+          .arg(ram_usage / 1048576)
+          .arg(vram_usage / 1048576) :
+        tr("Rewind for %n frame(s), lasting %1 second(s) will require %2MB of RAM.", "", frames)
+          .arg(duration)
+          .arg(ram_usage / 1048576));
     m_ui.rewindSaveFrequency->setEnabled(true);
     m_ui.rewindSaveSlots->setEnabled(true);
   }

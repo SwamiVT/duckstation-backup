@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
 #include "heterogeneous_containers.h"
 #include <cstdint>
@@ -82,6 +85,25 @@ public:
     }
   }
 
+  template<typename Pred>
+  std::size_t RemoveMatchingItems(const Pred& pred)
+  {
+    std::size_t removed_count = 0;
+    for (auto iter = m_items.begin(); iter != m_items.end();)
+    {
+      if (pred(iter->first))
+      {
+        iter = m_items.erase(iter);
+        removed_count++;
+      }
+      else
+      {
+        ++iter;
+      }
+    }
+    return removed_count;
+  }
+
   template<typename KeyT>
   bool Remove(const KeyT& key)
   {
@@ -102,6 +124,13 @@ public:
     // evict if we went over
     while (m_items.size() > m_max_capacity)
       Evict(m_items.size() - m_max_capacity);
+  }
+
+  template<typename F>
+  void Apply(const F& func)
+  {
+    for (auto& [key, value] : m_items)
+      func(const_cast<const K&>(key), value.value);
   }
 
 private:

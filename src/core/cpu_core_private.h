@@ -1,12 +1,28 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
+
 #include "bus.h"
 #include "cpu_core.h"
 
+struct fastjmp_buf;
+
 namespace CPU {
+
+// Memory address mask used for fetching as well as loadstores (removes cached/uncached/user/kernel bits).
+enum : PhysicalMemoryAddress
+{
+  KSEG_MASK = 0x1FFFFFFF,
+  KUSEG_MASK = 0x7FFFFFFF,
+};
+
+void SetPC(u32 new_pc);
 
 // exceptions
 void RaiseException(Exception excode);
 void RaiseException(u32 CAUSE_bits, u32 EPC);
+void RaiseBreakException(u32 CAUSE_bits, u32 EPC, u32 instruction_bits);
 
 ALWAYS_INLINE bool HasPendingInterrupt()
 {
@@ -21,7 +37,9 @@ ALWAYS_INLINE void CheckForPendingInterrupt()
 }
 
 void DispatchInterrupt();
-void UpdateDebugDispatcherFlag();
+
+// access to execution jump buffer, use with care!
+fastjmp_buf* GetExecutionJmpBuf();
 
 // icache stuff
 ALWAYS_INLINE bool IsCachedAddress(VirtualMemoryAddress address)
@@ -36,6 +54,10 @@ ALWAYS_INLINE u32 GetICacheLine(VirtualMemoryAddress address)
 ALWAYS_INLINE u32 GetICacheLineOffset(VirtualMemoryAddress address)
 {
   return (address & (ICACHE_LINE_SIZE - 1));
+}
+ALWAYS_INLINE u32 GetICacheLineWordOffset(VirtualMemoryAddress address)
+{
+  return (address >> 2) & 0x03u;
 }
 ALWAYS_INLINE u32 GetICacheTagForAddress(VirtualMemoryAddress address)
 {
@@ -62,7 +84,7 @@ ALWAYS_INLINE bool CompareICacheTag(VirtualMemoryAddress address)
 TickCount GetInstructionReadTicks(VirtualMemoryAddress address);
 TickCount GetICacheFillTicks(VirtualMemoryAddress address);
 u32 FillICache(VirtualMemoryAddress address);
-void CheckAndUpdateICacheTags(u32 line_count, TickCount uncached_ticks);
+void CheckAndUpdateICacheTags(u32 line_count);
 
 ALWAYS_INLINE Segment GetSegmentForAddress(VirtualMemoryAddress address)
 {
@@ -87,9 +109,10 @@ ALWAYS_INLINE Segment GetSegmentForAddress(VirtualMemoryAddress address)
   }
 }
 
-ALWAYS_INLINE PhysicalMemoryAddress VirtualAddressToPhysical(VirtualMemoryAddress address)
+ALWAYS_INLINE constexpr PhysicalMemoryAddress VirtualAddressToPhysical(VirtualMemoryAddress address)
 {
-  return (address & PHYSICAL_MEMORY_ADDRESS_MASK);
+  // KUSEG goes to the first 2GB, others are only 512MB.
+  return (address & ((address & 0x80000000u) ? KSEG_MASK : KUSEG_MASK));
 }
 
 ALWAYS_INLINE VirtualMemoryAddress PhysicalAddressToVirtual(PhysicalMemoryAddress address, Segment segment)
@@ -98,16 +121,11 @@ ALWAYS_INLINE VirtualMemoryAddress PhysicalAddressToVirtual(PhysicalMemoryAddres
   return bases[static_cast<u32>(segment)] | address;
 }
 
-// defined in bus.cpp - memory access functions which return false if an exception was thrown.
-bool FetchInstruction();
-bool FetchInstructionForInterpreterFallback();
+Bus::MemoryReadHandler GetMemoryReadHandler(VirtualMemoryAddress address, MemoryAccessSize size);
+Bus::MemoryWriteHandler GetMemoryWriteHandler(VirtualMemoryAddress address, MemoryAccessSize size);
+
+// memory access functions which return false if an exception was thrown.
 bool SafeReadInstruction(VirtualMemoryAddress addr, u32* value);
-bool ReadMemoryByte(VirtualMemoryAddress addr, u8* value);
-bool ReadMemoryHalfWord(VirtualMemoryAddress addr, u16* value);
-bool ReadMemoryWord(VirtualMemoryAddress addr, u32* value);
-bool WriteMemoryByte(VirtualMemoryAddress addr, u32 value);
-bool WriteMemoryHalfWord(VirtualMemoryAddress addr, u32 value);
-bool WriteMemoryWord(VirtualMemoryAddress addr, u32 value);
 void* GetDirectReadMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size, TickCount* read_ticks);
 void* GetDirectWriteMemoryPointer(VirtualMemoryAddress address, MemoryAccessSize size);
 
@@ -121,5 +139,71 @@ ALWAYS_INLINE void StallUntilGTEComplete()
   g_state.pending_ticks =
     (g_state.gte_completion_tick > g_state.pending_ticks) ? g_state.gte_completion_tick : g_state.pending_ticks;
 }
+
+ALWAYS_INLINE void AddMulDivTicks(TickCount ticks)
+{
+  g_state.muldiv_completion_tick = g_state.pending_ticks + ticks;
+}
+
+ALWAYS_INLINE void StallUntilMulDivComplete()
+{
+  g_state.pending_ticks =
+    (g_state.muldiv_completion_tick > g_state.pending_ticks) ? g_state.muldiv_completion_tick : g_state.pending_ticks;
+}
+
+ALWAYS_INLINE constexpr TickCount GetMultTicks(s32 rs)
+{
+  // Subtract one because of the instruction cycle.
+  if (rs < 0)
+    return (rs >= -2048) ? (6 - 1) : ((rs >= -1048576) ? (9 - 1) : (13 - 1));
+  else
+    return (rs < 0x800) ? (6 - 1) : ((rs < 0x100000) ? (9 - 1) : (13 - 1));
+}
+
+ALWAYS_INLINE constexpr TickCount GetMultTicks(u32 rs)
+{
+  return (rs < 0x800) ? (6 - 1) : ((rs < 0x100000) ? (9 - 1) : (13 - 1));
+}
+
+ALWAYS_INLINE constexpr TickCount GetDivTicks()
+{
+  return (36 - 1);
+}
+
+// kernel call interception
+void HandleA0Syscall();
+void HandleB0Syscall();
+
+#ifdef ENABLE_RECOMPILER
+
+namespace RecompilerThunks {
+
+//////////////////////////////////////////////////////////////////////////
+// Trampolines for calling back from the JIT
+// Needed because we can't cast member functions to void*...
+// TODO: Abuse carry flag or something else for exception
+//////////////////////////////////////////////////////////////////////////
+bool InterpretInstruction();
+bool InterpretInstructionPGXP();
+
+// Memory access functions for the JIT - MSB is set on exception.
+u64 ReadMemoryByte(u32 address);
+u64 ReadMemoryHalfWord(u32 address);
+u64 ReadMemoryWord(u32 address);
+u32 WriteMemoryByte(u32 address, u32 value);
+u32 WriteMemoryHalfWord(u32 address, u32 value);
+u32 WriteMemoryWord(u32 address, u32 value);
+
+// Unchecked memory access variants. No alignment or bus exceptions.
+u32 UncheckedReadMemoryByte(u32 address);
+u32 UncheckedReadMemoryHalfWord(u32 address);
+u32 UncheckedReadMemoryWord(u32 address);
+void UncheckedWriteMemoryByte(u32 address, u32 value);
+void UncheckedWriteMemoryHalfWord(u32 address, u32 value);
+void UncheckedWriteMemoryWord(u32 address, u32 value);
+
+} // namespace RecompilerThunks
+
+#endif
 
 } // namespace CPU

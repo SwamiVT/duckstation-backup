@@ -1,15 +1,21 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
-#include "core/types.h"
+
 #include "ui_debuggerwindow.h"
+
+#include "core/cpu_core.h"
+#include "core/types.h"
+
+#include <QtCore/QTimer>
 #include <QtWidgets/QMainWindow>
-#include <memory>
 #include <optional>
 
 namespace Bus {
 enum class MemoryRegion;
 }
 
-class DebuggerCodeModel;
 class DebuggerRegistersModel;
 class DebuggerStackModel;
 
@@ -21,61 +27,68 @@ public:
   explicit DebuggerWindow(QWidget* parent = nullptr);
   ~DebuggerWindow();
 
+  void reportMessage(const QString& message);
+  void updateBreakpointHitCounts(const CPU::BreakpointList& bps);
+
 Q_SIGNALS:
   void closed();
 
-public Q_SLOTS:
-  void onEmulationPaused();
-  void onEmulationResumed();
-
 protected:
-  void closeEvent(QCloseEvent* event);
-
-private Q_SLOTS:
-  void onDebuggerMessageReported(const QString& message);
-
-  void refreshAll();
-
-  void scrollToPC();
-
-  void onPauseActionToggled(bool paused);
-  void onRunToCursorTriggered();
-  void onGoToPCTriggered();
-  void onGoToAddressTriggered();
-  void onDumpAddressTriggered();
-  void onFollowAddressTriggered();
-  void onTraceTriggered();  
-  void onAddBreakpointTriggered();
-  void onToggleBreakpointTriggered();
-  void onClearBreakpointsTriggered();
-  void onStepIntoActionTriggered();
-  void onStepOverActionTriggered();
-  void onStepOutActionTriggered();
-  void onCodeViewItemActivated(QModelIndex index);
-  void onMemorySearchTriggered();
-  void onMemorySearchStringChanged(const QString&);
-
+  void closeEvent(QCloseEvent* event) override;
 
 private:
   void setupAdditionalUi();
   void connectSignals();
-  void disconnectSignals();
   void createModels();
-  void setUIEnabled(bool enabled);
+  void setUIEnabled(bool enabled, bool allow_pause);
+  void saveCurrentState();
   void setMemoryViewRegion(Bus::MemoryRegion region);
   void toggleBreakpoint(VirtualMemoryAddress address);
   void clearBreakpoints();
-  std::optional<VirtualMemoryAddress> getSelectedCodeAddress();
   bool tryFollowLoadStore(VirtualMemoryAddress address);
-  void scrollToCodeAddress(VirtualMemoryAddress address);
+  void scrollToPC(bool center);
+  void scrollToCodeAddress(VirtualMemoryAddress address, bool center);
   bool scrollToMemoryAddress(VirtualMemoryAddress address);
   void refreshBreakpointList();
+  void refreshBreakpointList(const CPU::BreakpointList& bps);
+  void addBreakpoint(CPU::BreakpointType type, u32 address);
+  void removeBreakpoint(CPU::BreakpointType type, u32 address);
+
+  void onSystemStarted();
+  void onSystemDestroyed();
+  void onSystemPaused();
+  void onSystemResumed();
+
+  void timerRefresh();
+  void refreshAll();
+
+  void onPauseActionTriggered(bool paused);
+  void onRunToCursorTriggered();
+  void onGoToPCTriggered();
+  void onGoToAddressTriggered();
+  void onDumpAddressTriggered();
+  void onTraceTriggered();
+  void onAddBreakpointTriggered();
+  void onToggleBreakpointTriggered();
+  void onClearBreakpointsTriggered();
+  void onBreakpointListContextMenuRequested();
+  void onBreakpointListItemChanged(QTreeWidgetItem* item, int column);
+  void onStepIntoActionTriggered();
+  void onStepOverActionTriggered();
+  void onStepOutActionTriggered();
+  void onCodeViewAddressActivated(VirtualMemoryAddress address);
+  void onCodeViewToggleBreakpointActivated(VirtualMemoryAddress address);
+  void onCodeViewCommentActivated(VirtualMemoryAddress address);
+  void onCodeViewContextMenuRequested(const QPoint& pt);
+  void onMemorySearchTriggered();
+  void onMemorySearchStringChanged(const QString&);
 
   Ui::DebuggerWindow m_ui;
 
-  std::unique_ptr<DebuggerCodeModel> m_code_model;
-  std::unique_ptr<DebuggerRegistersModel> m_registers_model;
-  std::unique_ptr<DebuggerStackModel> m_stack_model;
+  DebuggerRegistersModel* m_registers_model;
+  DebuggerStackModel* m_stack_model;
+
+  QTimer m_refresh_timer;
 
   Bus::MemoryRegion m_active_memory_region;
 

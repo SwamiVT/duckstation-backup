@@ -1,31 +1,32 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
-#include "common/types.h"
-#include <QtCore/QMap>
-#include <QtWidgets/QWidget>
-#include <array>
-#include <vector>
+
+#include "colorpickerbutton.h"
 
 #include "ui_controllerglobalsettingswidget.h"
 
-class ControllerSettingsDialog;
+#include "common/types.h"
+
+class ControllerSettingsWindow;
 
 class ControllerGlobalSettingsWidget : public QWidget
 {
   Q_OBJECT
 
 public:
-  ControllerGlobalSettingsWidget(QWidget* parent, ControllerSettingsDialog* dialog);
+  ControllerGlobalSettingsWidget(QWidget* parent, ControllerSettingsWindow* dialog);
   ~ControllerGlobalSettingsWidget();
-
-  void addDeviceToList(const QString& identifier, const QString& name);
-  void removeDeviceFromList(const QString& identifier);
 
 Q_SIGNALS:
   void bindingSetupChanged();
 
 private:
   void updateSDLOptionsEnabled();
+  void sdlHelpTextLinkClicked(const QString& link);
+  void ledSettingsClicked();
 
   Ui::ControllerGlobalSettingsWidget m_ui;
-  ControllerSettingsDialog* m_dialog;
+  ControllerSettingsWindow* m_dialog;
 };

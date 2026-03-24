@@ -1,120 +1,65 @@
-/*===============================================================================*\
-|########################     [Dolphin FX Suite 2.20]      #######################|
-|##########################        By Asmodean          ##########################|
-||                                                                               ||
-||          This program is free software; you can redistribute it and/or        ||
-||          modify it under the terms of the GNU General Public License          ||
-||          as published by the Free Software Foundation; either version 2       ||
-||          of the License, or (at your option) any later version.               ||
-||                                                                               ||
-||          This program is distributed in the hope that it will be useful,      ||
-||          but WITHOUT ANY WARRANTY; without even the implied warranty of       ||
-||          MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the        ||
-||          GNU General Public License for more details. (C)2015                 ||
-||                                                                               ||
-|#################################################################################|
-\*===============================================================================*/
-
-// Sourced from https://raw.githubusercontent.com/Asmodean-/dolphin/89d640cd557189bb5f921fc219150c74c39bdc55/Data/Sys/Shaders/DolphinFX.glsl with modifications.
-
 /*
 [configuration]
 
-[OptionRangeInteger]
-GUIName = ScanlineType
-OptionName = A_SCANLINE_TYPE
-MinValue = 0
-MaxValue = 2
-StepAmount = 1
-DefaultValue = 0
+[OptionRangeFloat]
+GUIName = Active Line Brightness
+OptionName = BRIGHTEN
+MinValue = 0.1
+MaxValue = 2.0
+StepAmount = 0.1
+DefaultValue = 1.1
 
 [OptionRangeFloat]
-GUIName = ScanlineIntensity
-OptionName = B_SCANLINE_INTENSITY
-MinValue = 0.15
-MaxValue = 0.30
+GUIName = Inactive Line Darkness
+OptionName = DARKEN
+MinValue = 0.1
+MaxValue = 1.0
 StepAmount = 0.01
-DefaultValue = 0.18
+DefaultValue = 0.5
 
 [OptionRangeFloat]
-GUIName = ScanlineThickness
-OptionName = B_SCANLINE_THICKNESS
-MinValue = 0.20
-MaxValue = 0.80
+GUIName = Scanline Thickness
+OptionName = THICKNESS
+MinValue = 0.1
+MaxValue = 1.0
 StepAmount = 0.01
-DefaultValue = 0.50
+DefaultValue = 0.5
 
 [OptionRangeFloat]
-GUIName = ScanlineBrightness
-OptionName = B_SCANLINE_BRIGHTNESS
-MinValue = 0.50
-MaxValue = 2.00
-StepAmount = 0.01
-DefaultValue = 1.10
-
-[OptionRangeFloat]
-GUIName = ScanlineSpacing
-OptionName = B_SCANLINE_SPACING
-MinValue = 0.10
-MaxValue = 0.99
+GUIName = Scanline Spacing
+OptionName = SPACING
+MinValue = 0.1
+MaxValue = 1.0
 StepAmount = 0.01
 DefaultValue = 0.25
 
 [/configuration]
 */
 
-//Average relative luminance
-CONSTANT float3 lumCoeff = float3(0.2126729, 0.7151522, 0.0721750);
-float AvgLuminance(float3 color)
+float3 RGBToYUV(float3 rgb)
 {
-    return sqrt(
-    (color.x * color.x * lumCoeff.x) +
-    (color.y * color.y * lumCoeff.y) +
-    (color.z * color.z * lumCoeff.z));
+  return float3(dot(rgb.rgb, float3(0.299, 0.587, 0.114)),
+                dot(rgb.rgb, float3(-0.14713, -0.28886, 0.436)),
+                dot(rgb.rgb, float3(0.615, -0.51499, -0.10001)));
+}
+
+float3 YUVToRGB(float3 yuv)
+{
+  return float3(dot(yuv, float3(1.0f, 0.0, 1.13983)),
+                dot(yuv, float3(1.0f, -0.39465, -0.58060)),
+                dot(yuv, float3(1.0f, 2.03211, 0.0)));
 }
 
 void main()
 {
-    float4 color = Sample();
-    float4 intensity = float4(0.0, 0.0, 0.0, 0.0);
+  float2 pos = GetFragCoord();
+  float4 color = Sample();
+  float3 yuv = RGBToYUV(color.rgb);
 
-    if (GetOption(A_SCANLINE_TYPE) == 0) { //X coord scanlines
-    if (fract(gl_FragCoord.y * GetOption(B_SCANLINE_SPACING)) > GetOption(B_SCANLINE_THICKNESS))
-    {
-        intensity = float4(0.0, 0.0, 0.0, 0.0);
-    } 
-    else
-    {
-        intensity = smoothstep(0.2, GetOption(B_SCANLINE_BRIGHTNESS), color) +
-        normalize(float4(color.xyz, AvgLuminance(color.xyz)));
-    } }
+  float thickness = GetOption(THICKNESS);
+  float spacing = GetOption(SPACING);
+  yuv.r *= (frac(pos.y * spacing) > thickness) ? (1.0 - GetOption(DARKEN)) : GetOption(BRIGHTEN);
 
-    else if (GetOption(A_SCANLINE_TYPE) == 1) { //Y coord scanlines
-    if (fract(gl_FragCoord.x * GetOption(B_SCANLINE_SPACING)) > GetOption(B_SCANLINE_THICKNESS))
-    {
-        intensity = float4(0.0, 0.0, 0.0, 0.0);
-    }
-    else
-    {
-        intensity = smoothstep(0.2, GetOption(B_SCANLINE_BRIGHTNESS), color) +
-        normalize(float4(color.xyz, AvgLuminance(color.xyz)));
-    } }
-
-    else if (GetOption(A_SCANLINE_TYPE) == 2) { //XY coord scanlines
-    if (fract(gl_FragCoord.x * GetOption(B_SCANLINE_SPACING)) > GetOption(B_SCANLINE_THICKNESS) &&
-        fract(gl_FragCoord.y * GetOption(B_SCANLINE_SPACING)) > GetOption(B_SCANLINE_THICKNESS))
-    {
-        intensity = float4(0.0, 0.0, 0.0, 0.0);
-    }
-    else
-    {
-        intensity = smoothstep(0.2, GetOption(B_SCANLINE_BRIGHTNESS), color) +
-        normalize(float4(color.xyz, AvgLuminance(color.xyz)));
-    } }
-
-    float level = (4.0-GetCoordinates().x) * GetOption(B_SCANLINE_INTENSITY);
-
-    color = intensity * (0.5 - level) + color * 1.1;
-
-    SetOutput(saturate(color));
+  color.rgb = YUVToRGB(yuv);
+  SetOutput(color);
 }

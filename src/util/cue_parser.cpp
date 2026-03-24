@@ -1,13 +1,23 @@
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "cue_parser.h"
+
 #include "common/error.h"
 #include "common/log.h"
+#include "common/small_string.h"
 #include "common/string_util.h"
+
 #include <cstdarg>
-Log_SetChannel(CueParser);
+#include <sstream>
+
+LOG_CHANNEL(CueParser);
 
 namespace CueParser {
+static bool TokenMatch(std::string_view s1, const char* token);
+}
 
-static bool TokenMatch(const std::string_view& s1, const char* token)
+bool CueParser::TokenMatch(std::string_view s1, const char* token)
 {
   const size_t token_len = std::strlen(token);
   if (s1.length() != token_len)
@@ -16,11 +26,11 @@ static bool TokenMatch(const std::string_view& s1, const char* token)
   return (StringUtil::Strncasecmp(s1.data(), token, token_len) == 0);
 }
 
-File::File() = default;
+CueParser::File::File() = default;
 
-File::~File() = default;
+CueParser::File::~File() = default;
 
-const Track* File::GetTrack(u32 n) const
+const CueParser::Track* CueParser::File::GetTrack(u32 n) const
 {
   for (const auto& it : m_tracks)
   {
@@ -31,7 +41,7 @@ const Track* File::GetTrack(u32 n) const
   return nullptr;
 }
 
-Track* File::GetMutableTrack(u32 n)
+CueParser::Track* CueParser::File::GetMutableTrack(u32 n)
 {
   for (auto& it : m_tracks)
   {
@@ -42,7 +52,7 @@ Track* File::GetMutableTrack(u32 n)
   return nullptr;
 }
 
-bool File::Parse(std::FILE* fp, Common::Error* error)
+bool CueParser::File::Parse(std::FILE* fp, Error* error)
 {
   char line[1024];
   u32 line_number = 1;
@@ -63,26 +73,44 @@ bool File::Parse(std::FILE* fp, Common::Error* error)
   return true;
 }
 
-void File::SetError(u32 line_number, Common::Error* error, const char* format, ...)
+bool CueParser::File::Parse(const std::string& buffer, Error* error)
+{
+  u32 line_number = 1;
+  std::istringstream ss(buffer);
+  for (std::string line; std::getline(ss, line);)
+  {
+    if (!ParseLine(line.c_str(), line_number, error))
+      return false;
+    line_number++;
+  }
+
+  if (!CompleteLastTrack(line_number, error))
+    return false;
+
+  if (!SetTrackLengths(line_number, error))
+    return false;
+
+  return true;
+}
+
+void CueParser::File::SetError(u32 line_number, Error* error, const char* format, ...)
 {
   std::va_list ap;
   SmallString str;
   va_start(ap, format);
-  str.FormatVA(format, ap);
+  str.vsprintf(format, ap);
   va_end(ap);
 
-  Log_ErrorPrintf("Cue parse error at line %u: %s", line_number, str.GetCharArray());
-
-  if (error)
-    error->SetFormattedMessage("Cue parse error at line %u: %s", line_number, str.GetCharArray());
+  ERROR_LOG("Cue parse error at line {}: {}", line_number, str.c_str());
+  Error::SetStringFmt(error, "Cue parse error at line {}: {}", line_number, str);
 }
 
-std::string_view File::GetToken(const char*& line)
+std::string_view CueParser::File::GetToken(const char*& line)
 {
   std::string_view ret;
 
   const char* start = line;
-  while (std::isspace(*start) && *start != '\0')
+  while (StringUtil::IsWhitespace(*start) && *start != '\0')
     start++;
 
   if (*start == '\0')
@@ -108,7 +136,7 @@ std::string_view File::GetToken(const char*& line)
   else
   {
     end = start;
-    while (!std::isspace(*end) && *end != '\0')
+    while (!StringUtil::IsWhitespace(*end) && *end != '\0')
       end++;
 
     ret = std::string_view(start, static_cast<size_t>(end - start));
@@ -118,7 +146,7 @@ std::string_view File::GetToken(const char*& line)
   return ret;
 }
 
-std::optional<MSF> File::GetMSF(const std::string_view& token)
+std::optional<CueParser::MSF> CueParser::File::GetMSF(std::string_view token)
 {
   static const s32 max_values[] = {std::numeric_limits<s32>::max(), 60, 75};
 
@@ -148,7 +176,7 @@ std::optional<MSF> File::GetMSF(const std::string_view& token)
     if (part == 3)
       break;
 
-    while (end < token.length() && std::isspace(token[end]))
+    while (end < token.length() && StringUtil::IsWhitespace(token[end]))
       end++;
     if (end == token.length() || token[end] != ':')
       return std::nullopt;
@@ -163,7 +191,7 @@ std::optional<MSF> File::GetMSF(const std::string_view& token)
   return ret;
 }
 
-bool File::ParseLine(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::ParseLine(const char* line, u32 line_number, Error* error)
 {
   const std::string_view command(GetToken(line));
   if (command.empty())
@@ -188,7 +216,7 @@ bool File::ParseLine(const char* line, u32 line_number, Common::Error* error)
 
   if (TokenMatch(command, "POSTGAP"))
   {
-    Log_WarningPrintf("Ignoring '%*s' command", static_cast<int>(command.size()), command.data());
+    WARNING_LOG("Ignoring '{}' command", command);
     return true;
   }
 
@@ -207,7 +235,7 @@ bool File::ParseLine(const char* line, u32 line_number, Common::Error* error)
   return false;
 }
 
-bool File::HandleFileCommand(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::HandleFileCommand(const char* line, u32 line_number, Error* error)
 {
   const std::string_view filename(GetToken(line));
   const std::string_view mode(GetToken(line));
@@ -218,18 +246,27 @@ bool File::HandleFileCommand(const char* line, u32 line_number, Common::Error* e
     return false;
   }
 
-  if (!TokenMatch(mode, "BINARY"))
+  FileFormat format;
+  if (TokenMatch(mode, "BINARY"))
   {
-    SetError(line_number, error, "Only BINARY modes are supported");
+    format = FileFormat::Binary;
+  }
+  else if (TokenMatch(mode, "WAVE"))
+  {
+    format = FileFormat::Wave;
+  }
+  else
+  {
+    SetError(line_number, error, "Only BINARY and WAVE modes are supported");
     return false;
   }
 
-  m_current_file = filename;
-  Log_DebugPrintf("File '%s'", m_current_file->c_str());
+  m_current_file = {std::string(filename), format};
+  DEBUG_LOG("File '{}'", filename);
   return true;
 }
 
-bool File::HandleTrackCommand(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::HandleTrackCommand(const char* line, u32 line_number, Error* error)
 {
   if (!CompleteLastTrack(line_number, error))
     return false;
@@ -279,13 +316,14 @@ bool File::HandleTrackCommand(const char* line, u32 line_number, Common::Error* 
   }
 
   m_current_track = Track();
-  m_current_track->number = static_cast<u32>(track_number.value());
-  m_current_track->file = m_current_file.value();
+  m_current_track->number = static_cast<u8>(track_number.value());
+  m_current_track->file = m_current_file->first;
+  m_current_track->file_format = m_current_file->second;
   m_current_track->mode = mode;
   return true;
 }
 
-bool File::HandleIndexCommand(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::HandleIndexCommand(const char* line, u32 line_number, Error* error)
 {
   if (!m_current_track.has_value())
   {
@@ -331,7 +369,7 @@ bool File::HandleIndexCommand(const char* line, u32 line_number, Common::Error* 
   return true;
 }
 
-bool File::HandlePregapCommand(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::HandlePregapCommand(const char* line, u32 line_number, Error* error)
 {
   if (!m_current_track.has_value())
   {
@@ -359,11 +397,11 @@ bool File::HandlePregapCommand(const char* line, u32 line_number, Common::Error*
     return false;
   }
 
-  m_current_track->zero_pregap = std::move(msf);
+  m_current_track->zero_pregap = msf;
   return true;
 }
 
-bool File::HandleFlagCommand(const char* line, u32 line_number, Common::Error* error)
+bool CueParser::File::HandleFlagCommand(const char* line, u32 line_number, Error* error)
 {
   if (!m_current_track.has_value())
   {
@@ -386,13 +424,13 @@ bool File::HandleFlagCommand(const char* line, u32 line_number, Common::Error* e
     else if (TokenMatch(token, "SCMS"))
       m_current_track->SetFlag(TrackFlag::SerialCopyManagement);
     else
-      Log_WarningPrintf("Unknown track flag '%*s'", static_cast<int>(token.size()), token.data());
+      WARNING_LOG("Unknown track flag '{}'", token);
   }
 
   return true;
 }
 
-bool File::CompleteLastTrack(u32 line_number, Common::Error* error)
+bool CueParser::File::CompleteLastTrack(u32 line_number, Error* error)
 {
   if (!m_current_track.has_value())
     return true;
@@ -422,7 +460,7 @@ bool File::CompleteLastTrack(u32 line_number, Common::Error* error)
   const MSF* index0 = m_current_track->GetIndex(0);
   if (index0 && m_current_track->zero_pregap.has_value())
   {
-    Log_WarningPrintf("Zero pregap and index 0 specified in track %u, ignoring zero pregap", m_current_track->number);
+    WARNING_LOG("Zero pregap and index 0 specified in track {}, ignoring zero pregap", m_current_track->number);
     m_current_track->zero_pregap.reset();
   }
 
@@ -433,7 +471,7 @@ bool File::CompleteLastTrack(u32 line_number, Common::Error* error)
   return true;
 }
 
-bool File::SetTrackLengths(u32 line_number, Common::Error* error)
+bool CueParser::File::SetTrackLengths(u32 line_number, Error* error)
 {
   for (const Track& track : m_tracks)
   {
@@ -463,7 +501,7 @@ bool File::SetTrackLengths(u32 line_number, Common::Error* error)
   return true;
 }
 
-const CueParser::MSF* Track::GetIndex(u32 n) const
+const CueParser::MSF* CueParser::Track::GetIndex(u32 n) const
 {
   for (const auto& it : indices)
   {
@@ -473,5 +511,3 @@ const CueParser::MSF* Track::GetIndex(u32 n) const
 
   return nullptr;
 }
-
-} // namespace CueParser

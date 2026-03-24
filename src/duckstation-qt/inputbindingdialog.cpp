@@ -1,28 +1,75 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "inputbindingdialog.h"
-#include "common/bitutils.h"
+#include "controllersettingwidgetbinder.h"
 #include "inputbindingwidgets.h"
 #include "qthost.h"
 #include "qtutils.h"
+
+#include "core/core.h"
+
+#include "common/assert.h"
+#include "common/bitutils.h"
+
+#include "fmt/format.h"
+
 #include <QtCore/QTimer>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QWheelEvent>
 
-InputBindingDialog::InputBindingDialog(SettingsInterface* sif, std::string section_name, std::string key_name,
+#include "moc_inputbindingdialog.cpp"
+
+InputBindingDialog* InputBindingDialog::s_current_hook_dialog = nullptr;
+
+InputBindingDialog::InputBindingDialog(SettingsInterface* sif, InputBindingInfo::Type bind_type,
+                                       std::string section_name, std::string key_name,
                                        std::vector<std::string> bindings, QWidget* parent)
-  : QDialog(parent), m_sif(sif), m_section_name(std::move(section_name)), m_key_name(std::move(key_name)),
-    m_bindings(std::move(bindings))
+  : QDialog(parent), m_sif(sif), m_bind_type(bind_type), m_section_name(std::move(section_name)),
+    m_key_name(std::move(key_name)), m_bindings(std::move(bindings))
 {
   m_ui.setupUi(this);
   m_ui.title->setText(
     tr("Bindings for %1 %2").arg(QString::fromStdString(m_section_name)).arg(QString::fromStdString(m_key_name)));
-  m_ui.buttonBox->button(QDialogButtonBox::Close)->setText(tr("Close"));
+  m_ui.buttonBox->button(QDialogButtonBox::Close)->setDefault(true);
 
   connect(m_ui.addBinding, &QPushButton::clicked, this, &InputBindingDialog::onAddBindingButtonClicked);
   connect(m_ui.removeBinding, &QPushButton::clicked, this, &InputBindingDialog::onRemoveBindingButtonClicked);
   connect(m_ui.clearBindings, &QPushButton::clicked, this, &InputBindingDialog::onClearBindingsButtonClicked);
-  connect(m_ui.buttonBox, &QDialogButtonBox::rejected, [this]() { done(0); });
+  connect(m_ui.buttonBox, &QDialogButtonBox::rejected, this, &QDialog::accept);
   updateList();
+
+  // Only show the sensitivity controls for binds where it's applicable.
+  if (bind_type == InputBindingInfo::Type::Button || bind_type == InputBindingInfo::Type::Axis ||
+      bind_type == InputBindingInfo::Type::HalfAxis)
+  {
+    ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(sif, m_ui.sensitivity, m_section_name,
+                                                                      fmt::format("{}Scale", m_key_name), 100.0f, 1.0f);
+    ControllerSettingWidgetBinder::BindWidgetToInputProfileNormalized(
+      sif, m_ui.deadzone, m_section_name, fmt::format("{}Deadzone", m_key_name), 100.0f, 0.0f);
+
+    connect(m_ui.sensitivity, &QSlider::valueChanged, this, &InputBindingDialog::onSensitivityChanged);
+    connect(m_ui.resetSensitivity, &QPushButton::clicked, this, &InputBindingDialog::onResetSensitivityClicked);
+    connect(m_ui.deadzone, &QSlider::valueChanged, this, &InputBindingDialog::onDeadzoneChanged);
+    connect(m_ui.resetDeadzone, &QPushButton::clicked, this, &InputBindingDialog::onResetDeadzoneClicked);
+
+    onSensitivityChanged(m_ui.sensitivity->value());
+    onDeadzoneChanged(m_ui.deadzone->value());
+  }
+  else
+  {
+    m_ui.verticalLayout->removeWidget(m_ui.sensitivityWidget);
+    delete m_ui.sensitivityWidget;
+    m_ui.sensitivity = nullptr;
+    m_ui.sensitivityLabel = nullptr;
+    m_ui.sensitivityValue = nullptr;
+    m_ui.resetSensitivity = nullptr;
+    m_ui.deadzone = nullptr;
+    m_ui.deadzoneLabel = nullptr;
+    m_ui.deadzoneValue = nullptr;
+    m_ui.resetDeadzone = nullptr;
+  }
 }
 
 InputBindingDialog::~InputBindingDialog()
@@ -44,7 +91,8 @@ bool InputBindingDialog::eventFilter(QObject* watched, QEvent* event)
   else if (event_type == QEvent::KeyPress)
   {
     const QKeyEvent* key_event = static_cast<const QKeyEvent*>(event);
-    m_new_bindings.push_back(InputManager::MakeHostKeyboardKey(QtUtils::KeyEventToCode(key_event)));
+    if (const std::optional<u32> key = QtUtils::KeyEventToCode(key_event))
+      m_new_bindings.push_back(InputManager::MakeHostKeyboardKey(key.value()));
     return true;
   }
   else if (event_type == QEvent::MouseButtonPress || event_type == QEvent::MouseButtonDblClick)
@@ -57,19 +105,21 @@ bool InputBindingDialog::eventFilter(QObject* watched, QEvent* event)
   else if (event_type == QEvent::Wheel)
   {
     const QPoint delta_angle(static_cast<QWheelEvent*>(event)->angleDelta());
-    const float dx = std::clamp(static_cast<float>(delta_angle.x()) / QtUtils::MOUSE_WHEEL_DELTA, -1.0f, 1.0f);
+    const float dx = std::clamp(
+      static_cast<float>(delta_angle.x()) / static_cast<float>(QWheelEvent::DefaultDeltasPerStep), -1.0f, 1.0f);
     if (dx != 0.0f)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::WheelX));
-      key.negative = (dx < 0.0f);
+      key.modifier = dx < 0.0f ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
     }
 
-    const float dy = std::clamp(static_cast<float>(delta_angle.y()) / QtUtils::MOUSE_WHEEL_DELTA, -1.0f, 1.0f);
+    const float dy = std::clamp(
+      static_cast<float>(delta_angle.y()) / static_cast<float>(QWheelEvent::DefaultDeltasPerStep), -1.0f, 1.0f);
     if (dy != 0.0f)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::WheelY));
-      key.negative = (dy < 0.0f);
+      key.modifier = dy < 0.0f ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
     }
 
@@ -86,20 +136,20 @@ bool InputBindingDialog::eventFilter(QObject* watched, QEvent* event)
     // if we've moved more than a decent distance from the center of the widget, bind it.
     // this is so we don't accidentally bind to the mouse if you bump it while reaching for your pad.
     static constexpr const s32 THRESHOLD = 50;
-    const QPointF diff(static_cast<QMouseEvent*>(event)->globalPosition() - m_input_listen_start_position);
+    const QPoint diff(static_cast<QMouseEvent*>(event)->globalPosition().toPoint() - m_input_listen_start_position);
     bool has_one = false;
 
     if (std::abs(diff.x()) >= THRESHOLD)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::X));
-      key.negative = (diff.x() < 0);
+      key.modifier = diff.x() < 0 ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
       has_one = true;
     }
     if (std::abs(diff.y()) >= THRESHOLD)
     {
       InputBindingKey key(InputManager::MakePointerAxisKey(0, InputPointerAxis::Y));
-      key.negative = (diff.y() < 0);
+      key.modifier = diff.y() < 0 ? InputModifier::Negate : InputModifier::None;
       m_new_bindings.push_back(key);
       has_one = true;
     }
@@ -129,8 +179,10 @@ void InputBindingDialog::onInputListenTimerTimeout()
 
 void InputBindingDialog::startListeningForInput(u32 timeout_in_seconds)
 {
+  m_value_ranges.clear();
   m_new_bindings.clear();
   m_mouse_mapping_enabled = InputBindingWidget::isMouseMappingEnabled();
+  m_sensor_mapping_enabled = InputBindingWidget::isSensorMappingEnabled();
   m_input_listen_start_position = QCursor::pos();
   m_input_listen_timer = new QTimer(this);
   m_input_listen_timer->setSingleShot(false);
@@ -175,15 +227,16 @@ void InputBindingDialog::addNewBinding()
   if (m_new_bindings.empty())
     return;
 
-  const std::string new_binding(
-    InputManager::ConvertInputBindingKeysToString(m_new_bindings.data(), m_new_bindings.size()));
+  SmallString new_binding =
+    InputManager::ConvertInputBindingKeysToString(m_bind_type, m_new_bindings.data(), m_new_bindings.size());
   if (!new_binding.empty())
   {
-    if (std::find(m_bindings.begin(), m_bindings.end(), new_binding) != m_bindings.end())
+    if (std::find(m_bindings.begin(), m_bindings.end(), new_binding.view()) != m_bindings.end())
       return;
 
-    m_ui.bindingList->addItem(QString::fromStdString(new_binding));
-    m_bindings.push_back(std::move(new_binding));
+    m_bindings.emplace_back(new_binding);
+    InputManager::PrettifyInputBinding(new_binding, false);
+    m_ui.bindingList->addItem(QtUtils::StringViewToQString(new_binding));
     saveListToSettings();
   }
 }
@@ -218,7 +271,11 @@ void InputBindingDialog::updateList()
 {
   m_ui.bindingList->clear();
   for (const std::string& binding : m_bindings)
-    m_ui.bindingList->addItem(QString::fromStdString(binding));
+  {
+    SmallString pretty_binding(binding);
+    InputManager::PrettifyInputBinding(pretty_binding, false);
+    m_ui.bindingList->addItem(QtUtils::StringViewToQString(pretty_binding));
+  }
 }
 
 void InputBindingDialog::saveListToSettings()
@@ -229,30 +286,60 @@ void InputBindingDialog::saveListToSettings()
       m_sif->SetStringList(m_section_name.c_str(), m_key_name.c_str(), m_bindings);
     else
       m_sif->DeleteValue(m_section_name.c_str(), m_key_name.c_str());
-    m_sif->Save();
-    g_emu_thread->reloadGameSettings();
+    QtHost::SaveGameSettings(m_sif, false);
+    g_core_thread->reloadGameSettings();
   }
   else
   {
     if (!m_bindings.empty())
-      Host::SetBaseStringListSettingValue(m_section_name.c_str(), m_key_name.c_str(), m_bindings);
+      Core::SetBaseStringListSettingValue(m_section_name.c_str(), m_key_name.c_str(), m_bindings);
     else
-      Host::DeleteBaseSettingValue(m_section_name.c_str(), m_key_name.c_str());
+      Core::DeleteBaseSettingValue(m_section_name.c_str(), m_key_name.c_str());
     Host::CommitBaseSettingChanges();
-    g_emu_thread->reloadInputBindings();
+    if (m_bind_type == InputBindingInfo::Type::Pointer)
+      g_core_thread->updateControllerSettings();
+    g_core_thread->reloadInputBindings();
   }
 }
 
 void InputBindingDialog::inputManagerHookCallback(InputBindingKey key, float value)
 {
-  const float abs_value = std::abs(value);
+  if (!isListeningForInput())
+    return;
 
-  for (InputBindingKey other_key : m_new_bindings)
+  float initial_value;
+  float min_value;
+  auto it = std::find_if(m_value_ranges.begin(), m_value_ranges.end(),
+                         [key](const auto& it) { return it.first.bits == key.bits; });
+  if (it != m_value_ranges.end())
+  {
+    initial_value = it->second.first;
+    min_value = it->second.second = std::min(it->second.second, value);
+  }
+  else
+  {
+    // if this is a button, set an initial value of zero, since we won't get any event for the initial state
+    initial_value = min_value = (key.source_subtype == InputSubclass::ControllerButton) ? 0.0f : value;
+    m_value_ranges.emplace_back(key, std::make_pair(initial_value, min_value));
+  }
+
+  InputBindingWidget::logInputEvent(m_bind_type, key, value, initial_value, min_value);
+
+  const float abs_value = std::abs(value);
+  const float delta_from_initial = std::abs(std::abs(initial_value) - abs_value);
+  const bool reverse_threshold = (key.source_subtype == InputSubclass::ControllerAxis &&
+                                  std::abs(initial_value) > 0.5f && std::abs(initial_value - min_value) > 0.1f);
+
+  for (InputBindingKey& other_key : m_new_bindings)
   {
     if (other_key.MaskDirection() == key.MaskDirection())
     {
-      if (abs_value < 0.5f)
+      if (delta_from_initial <= 0.25f)
       {
+        // did we go the full range?
+        if (reverse_threshold && initial_value > 0.5f && min_value <= -0.5f)
+          other_key.modifier = InputModifier::FullAxis;
+
         // if this key is in our new binding list, it's a "release", and we're done
         addNewBinding();
         stopListeningForInput();
@@ -265,24 +352,87 @@ void InputBindingDialog::inputManagerHookCallback(InputBindingKey key, float val
   }
 
   // new binding, add it to the list, but wait for a decent distance first, and then wait for release
-  if (abs_value >= 0.5f)
+  if (delta_from_initial >= 0.5f)
   {
     InputBindingKey key_to_add = key;
-    key_to_add.negative = (value < 0.0f);
+    key_to_add.modifier = (value < 0.0f) ? InputModifier::Negate : InputModifier::None;
+    key_to_add.invert = reverse_threshold;
     m_new_bindings.push_back(key_to_add);
+  }
+}
+
+void InputBindingDialog::onSensitivityChanged(int value)
+{
+  m_ui.sensitivityValue->setText(tr("%1%").arg(value));
+}
+
+void InputBindingDialog::onResetDeadzoneClicked()
+{
+  m_ui.deadzone->setValue(0);
+
+  // May as well remove from the config completely, since it's the default.
+  const TinyString key = TinyString::from_format("{}Deadzone", m_key_name);
+  if (m_sif)
+  {
+    m_sif->DeleteValue(m_section_name.c_str(), key);
+    QtHost::SaveGameSettings(m_sif, false);
+    g_core_thread->reloadGameSettings(false);
+  }
+  else
+  {
+    Core::DeleteBaseSettingValue(m_section_name.c_str(), key);
+    Host::CommitBaseSettingChanges();
+    g_core_thread->applySettings(false);
+  }
+}
+
+void InputBindingDialog::onDeadzoneChanged(int value)
+{
+  m_ui.deadzoneValue->setText(tr("%1%").arg(value));
+}
+
+void InputBindingDialog::onResetSensitivityClicked()
+{
+  m_ui.sensitivity->setValue(100);
+
+  // May as well remove from the config completely, since it's the default.
+  const TinyString key = TinyString::from_format("{}Scale", m_key_name);
+  if (m_sif)
+  {
+    m_sif->DeleteValue(m_section_name.c_str(), key);
+    QtHost::SaveGameSettings(m_sif, false);
+    g_core_thread->reloadGameSettings(false);
+  }
+  else
+  {
+    Core::DeleteBaseSettingValue(m_section_name.c_str(), key);
+    Host::CommitBaseSettingChanges();
+    g_core_thread->applySettings(false);
   }
 }
 
 void InputBindingDialog::hookInputManager()
 {
-  InputManager::SetHook([this](InputBindingKey key, float value) {
-    QMetaObject::invokeMethod(this, "inputManagerHookCallback", Qt::QueuedConnection, Q_ARG(InputBindingKey, key),
-                              Q_ARG(float, value));
-    return InputInterceptHook::CallbackResult::StopProcessingEvent;
+  DebugAssert(!s_current_hook_dialog);
+  s_current_hook_dialog = this;
+  Host::RunOnCoreThread([sensor_enabled = m_sensor_mapping_enabled]() {
+    InputManager::SetHook([sensor_enabled](InputBindingKey key, float value) {
+      // if sensor mapping is disabled, avoid wasting time forwarding to UI thread
+      if (!sensor_enabled && InputBindingWidget::isSensorBinding(key))
+        return InputInterceptHook::CallbackResult::StopProcessingEvent;
+
+      Host::RunOnUIThread([key, value]() {
+        if (s_current_hook_dialog)
+          s_current_hook_dialog->inputManagerHookCallback(key, value);
+      });
+
+      return InputInterceptHook::CallbackResult::StopProcessingEvent;
+    });
   });
 }
 
 void InputBindingDialog::unhookInputManager()
 {
-  InputManager::RemoveHook();
+  s_current_hook_dialog = nullptr;
+  Host::RunOnCoreThread(&InputManager::RemoveHook);
 }

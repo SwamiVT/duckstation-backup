@@ -1,11 +1,15 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
+
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <type_traits>
 
 // Force inline helper
-#ifndef ALWAYS_INLINE
 #if defined(_MSC_VER)
 #define ALWAYS_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
@@ -13,13 +17,21 @@
 #else
 #define ALWAYS_INLINE inline
 #endif
-#endif
 
 // Force inline in non-debug helper
 #ifdef _DEBUG
 #define ALWAYS_INLINE_RELEASE inline
 #else
 #define ALWAYS_INLINE_RELEASE ALWAYS_INLINE
+#endif
+
+// Prevent inlining
+#if defined(_MSC_VER)
+#define NEVER_INLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define NEVER_INLINE __attribute__((noinline))
+#else
+#define NEVER_INLINE
 #endif
 
 // unreferenced parameter macro
@@ -42,30 +54,63 @@ char (&__countof_ArraySizeHelper(T (&array)[N]))[N];
 #endif
 #endif
 
-// offsetof macro
-#ifndef offsetof
-#define offsetof(st, m) ((size_t)((char*)&((st*)(0))->m - (char*)0))
-#endif
+// offsetof macro. Need to use __builtin_offsetof(), otherwise it doesn't work in constant expressions.
+#if defined(__clang__) || defined(__GNUC__)
 
-#ifdef __GNUC__
-#define printflike(n,m) __attribute__((format(printf,n,m)))
+#define OFFSETOF(st, m) __builtin_offsetof(st, m)
+
+#define PRINTFLIKE(n, m) __attribute__((format(printf, n, m)))
+
 #else
-#define printflike(n,m)
+
+#ifdef offsetof
+#define OFFSETOF(st, m) offsetof(st, m)
+#else
+#define OFFSETOF(st, m) ((size_t)((char*)&((st*)(0))->m - (char*)0))
 #endif
 
+#define PRINTFLIKE(n, m)
+
+#endif
+
+// [[noreturn]] which can be used on function pointers.
 #ifdef _MSC_VER
-// TODO: Use C++20 [[likely]] when available.
-#define LIKELY(x)  (!!(x))
-#define UNLIKELY(x)  (!!(x))
+// __declspec(noreturn) produces error C3829.
+#define NORETURN_FUNCTION_POINTER
 #else
-#define LIKELY(x) __builtin_expect(!!(x), 1)
-#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define NORETURN_FUNCTION_POINTER __attribute__((noreturn))
 #endif
 
+// __assume, potentially enables optimization.
+#ifdef _MSC_VER
+#define ASSUME(x) __assume(x)
+#else
+#define ASSUME(x)                                                                                                      \
+  do                                                                                                                   \
+  {                                                                                                                    \
+    if (!(x))                                                                                                          \
+      __builtin_unreachable();                                                                                         \
+  } while (0)
+#endif
+
+// __restrict, potentially enables optimization by hinting the compiler that the object is unique.
+#ifdef _MSC_VER
+#define RESTRICT __restrict
+#else
+#define RESTRICT __restrict__
+#endif
+
+// msvc requires a different attribute, of course
+#ifdef _MSC_VER
+#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
 
 // disable warnings that show up at warning level 4
 // TODO: Move to build system instead
 #ifdef _MSC_VER
+#pragma warning(disable : 4200) // warning C4200: nonstandard extension used: zero-sized array in struct/union
 #pragma warning(disable : 4201) // warning C4201: nonstandard extension used : nameless struct/union
 #pragma warning(disable : 4100) // warning C4100: 'Platform' : unreferenced formal parameter
 #pragma warning(disable : 4355) // warning C4355: 'this' : used in base member initializer list
@@ -90,129 +135,112 @@ struct dependent_int_false : std::false_type
 {
 };
 
-// Zero-extending helper
-template<typename TReturn, typename TValue>
-ALWAYS_INLINE constexpr TReturn ZeroExtend(TValue value)
-{
-  return static_cast<TReturn>(static_cast<typename std::make_unsigned<TReturn>::type>(
-    static_cast<typename std::make_unsigned<TValue>::type>(value)));
-}
-// Sign-extending helper
-template<typename TReturn, typename TValue>
-ALWAYS_INLINE constexpr TReturn SignExtend(TValue value)
-{
-  return static_cast<TReturn>(
-    static_cast<typename std::make_signed<TReturn>::type>(static_cast<typename std::make_signed<TValue>::type>(value)));
-}
+// Architecture detection.
+#if defined(_MSC_VER)
 
-// Type-specific helpers
-template<typename TValue>
-ALWAYS_INLINE constexpr u16 ZeroExtend16(TValue value)
-{
-  return ZeroExtend<u16, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u32 ZeroExtend32(TValue value)
-{
-  return ZeroExtend<u32, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u64 ZeroExtend64(TValue value)
-{
-  return ZeroExtend<u64, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u16 SignExtend16(TValue value)
-{
-  return SignExtend<u16, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u32 SignExtend32(TValue value)
-{
-  return SignExtend<u32, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u64 SignExtend64(TValue value)
-{
-  return SignExtend<u64, TValue>(value);
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u8 Truncate8(TValue value)
-{
-  return static_cast<u8>(static_cast<typename std::make_unsigned<decltype(value)>::type>(value));
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u16 Truncate16(TValue value)
-{
-  return static_cast<u16>(static_cast<typename std::make_unsigned<decltype(value)>::type>(value));
-}
-template<typename TValue>
-ALWAYS_INLINE constexpr u32 Truncate32(TValue value)
-{
-  return static_cast<u32>(static_cast<typename std::make_unsigned<decltype(value)>::type>(value));
-}
+#if defined(_M_X64)
+#define CPU_ARCH_X64 1
+#elif defined(_M_IX86)
+#define CPU_ARCH_X86 1
+#elif defined(_M_ARM64)
+#define CPU_ARCH_ARM64 1
+#elif defined(_M_ARM)
+#define CPU_ARCH_ARM32 1
+#else
+#error Unknown architecture.
+#endif
 
-// BCD helpers
-ALWAYS_INLINE constexpr u8 BinaryToBCD(u8 value)
-{
-  return ((value / 10) << 4) + (value % 10);
-}
-ALWAYS_INLINE constexpr u8 PackedBCDToBinary(u8 value)
-{
-  return ((value >> 4) * 10) + (value % 16);
-}
-ALWAYS_INLINE constexpr u8 IsValidBCDDigit(u8 digit)
-{
-  return (digit <= 9);
-}
-ALWAYS_INLINE constexpr u8 IsValidPackedBCD(u8 value)
-{
-  return IsValidBCDDigit(value & 0x0F) && IsValidBCDDigit(value >> 4);
-}
+#elif defined(__GNUC__) || defined(__clang__)
 
-// Boolean to integer
-ALWAYS_INLINE constexpr u8 BoolToUInt8(bool value)
-{
-  return static_cast<u8>(value);
-}
-ALWAYS_INLINE constexpr u16 BoolToUInt16(bool value)
-{
-  return static_cast<u16>(value);
-}
-ALWAYS_INLINE constexpr u32 BoolToUInt32(bool value)
-{
-  return static_cast<u32>(value);
-}
-ALWAYS_INLINE constexpr u64 BoolToUInt64(bool value)
-{
-  return static_cast<u64>(value);
-}
+#if defined(__x86_64__)
+#define CPU_ARCH_X64 1
+#elif defined(__i386__)
+#define CPU_ARCH_X86 1
+#elif defined(__aarch64__)
+#define CPU_ARCH_ARM64 1
+#elif defined(__arm__)
+#define CPU_ARCH_ARM32 1
+#elif defined(__riscv) && __riscv_xlen == 64
+#define CPU_ARCH_RISCV64 1
+#elif defined(__loongarch64)
+#define CPU_ARCH_LOONGARCH64 1
+#else
+#error Unknown architecture.
+#endif
 
-// Integer to boolean
-template<typename TValue>
-ALWAYS_INLINE constexpr bool ConvertToBool(TValue value)
-{
-  return static_cast<bool>(value);
-}
+#else
 
-// Unsafe integer to boolean
-template<typename TValue>
-ALWAYS_INLINE bool ConvertToBoolUnchecked(TValue value)
-{
-  // static_assert(sizeof(uint8) == sizeof(bool));
-  bool ret;
-  std::memcpy(&ret, &value, sizeof(bool));
-  return ret;
-}
+#error Unknown compiler.
 
-// Generic sign extension
-template<int NBITS, typename T>
-ALWAYS_INLINE constexpr T SignExtendN(T value)
-{
-  // http://graphics.stanford.edu/~seander/bithacks.html#VariableSignExtend
-  constexpr int shift = 8 * sizeof(T) - NBITS;
-  return static_cast<T>((static_cast<std::make_signed_t<T>>(value) << shift) >> shift);
-}
+#endif
+
+#if defined(CPU_ARCH_X64)
+#define CPU_ARCH_STR "x64"
+#elif defined(CPU_ARCH_X86)
+#define CPU_ARCH_STR "x86"
+#elif defined(CPU_ARCH_ARM32)
+#define CPU_ARCH_STR "arm32"
+#elif defined(CPU_ARCH_ARM64)
+#define CPU_ARCH_STR "arm64"
+#elif defined(CPU_ARCH_RISCV64)
+#define CPU_ARCH_STR "riscv64"
+#elif defined(CPU_ARCH_LOONGARCH64)
+#define CPU_ARCH_STR "loongarch64"
+#else
+#define CPU_ARCH_STR "Unknown"
+#endif
+
+// OS detection.
+#if defined(_WIN32)
+#define TARGET_OS_STR "Windows"
+#elif defined(__ANDROID__)
+#define TARGET_OS_STR "Android"
+#elif defined(__linux__)
+#define TARGET_OS_STR "Linux"
+#elif defined(__FreeBSD__)
+#define TARGET_OS_STR "FreeBSD"
+#elif defined(__APPLE__)
+#define TARGET_OS_STR "macOS"
+#else
+#define TARGET_OS_STR "Unknown"
+#endif
+
+// Host page sizes.
+#if defined(MIN_HOST_PAGE_SIZE) || defined(MAX_HOST_PAGE_SIZE)
+#if !defined(MIN_HOST_PAGE_SIZE) || !defined(MAX_HOST_PAGE_SIZE)
+#error Both MIN_HOST_PAGE_SIZE and MAX_HOST_PAGE_SIZE need to be defined.
+#endif
+#define DYNAMIC_HOST_PAGE_SIZE 1
+extern const u32 HOST_PAGE_SIZE;
+extern const u32 HOST_PAGE_MASK;
+extern const u32 HOST_PAGE_SHIFT;
+#else
+#if defined(OVERRIDE_HOST_PAGE_SIZE)
+inline constexpr u32 HOST_PAGE_SIZE = OVERRIDE_HOST_PAGE_SIZE;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = std::bit_width(HOST_PAGE_MASK);
+#elif defined(__APPLE__) && defined(__aarch64__)
+inline constexpr u32 HOST_PAGE_SIZE = 0x4000;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = 14;
+#else
+inline constexpr u32 HOST_PAGE_SIZE = 0x1000;
+inline constexpr u32 HOST_PAGE_MASK = HOST_PAGE_SIZE - 1;
+inline constexpr u32 HOST_PAGE_SHIFT = 12;
+#endif
+inline constexpr u32 MIN_HOST_PAGE_SIZE = HOST_PAGE_SIZE;
+inline constexpr u32 MAX_HOST_PAGE_SIZE = HOST_PAGE_SIZE;
+#endif
+
+// Host cache line sizes.
+#if defined(OVERRIDE_HOST_CACHE_LINE_SIZE)
+inline constexpr u32 HOST_CACHE_LINE_SIZE = OVERRIDE_HOST_CACHE_LINE_SIZE;
+#elif defined(__APPLE__) && defined(__aarch64__)
+inline constexpr u32 HOST_CACHE_LINE_SIZE = 128; // Apple Silicon uses 128b cache lines.
+#else
+inline constexpr u32 HOST_CACHE_LINE_SIZE = 64; // Everything else is 64b.
+#endif
+#define ALIGN_TO_CACHE_LINE alignas(HOST_CACHE_LINE_SIZE)
 
 // Enum class bitwise operators
 #define IMPLEMENT_ENUM_CLASS_BITWISE_OPERATORS(type_)                                                                  \
@@ -253,3 +281,6 @@ ALWAYS_INLINE constexpr T SignExtendN(T value)
                              static_cast<std::underlying_type<type_>::type>(rhs));                                     \
     return lhs;                                                                                                        \
   }
+
+// Compute the address of a base type given a field offset.
+#define BASE_FROM_RECORD_FIELD(ptr, base_type, field) ((base_type*)(((char*)ptr) - offsetof(base_type, field)))

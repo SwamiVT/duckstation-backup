@@ -1,11 +1,17 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com> and contributors.
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "multitap.h"
-#include "common/log.h"
-#include "common/types.h"
 #include "controller.h"
 #include "memory_card.h"
 #include "pad.h"
+
 #include "util/state_wrapper.h"
-Log_SetChannel(Multitap);
+
+#include "common/log.h"
+#include "common/types.h"
+
+LOG_CHANNEL(Multitap);
 
 Multitap::Multitap()
 {
@@ -59,7 +65,8 @@ void Multitap::ResetTransferState()
 
 bool Multitap::TransferController(u32 slot, const u8 data_in, u8* data_out) const
 {
-  Controller* const selected_controller = g_pad.GetController(m_base_index + slot);
+  const u32 pad_port = Controller::ConvertPortAndSlotToPad(m_base_index, slot);
+  Controller* const selected_controller = Pad::GetController(pad_port);
   if (!selected_controller)
   {
     *data_out = 0xFF;
@@ -71,7 +78,8 @@ bool Multitap::TransferController(u32 slot, const u8 data_in, u8* data_out) cons
 
 bool Multitap::TransferMemoryCard(u32 slot, const u8 data_in, u8* data_out) const
 {
-  MemoryCard* const selected_memcard = g_pad.GetMemoryCard(m_base_index + slot);
+  const u32 pad_port = Controller::ConvertPortAndSlotToPad(m_base_index, slot);
+  MemoryCard* const selected_memcard = Pad::GetMemoryCard(pad_port);
   if (!selected_memcard)
   {
     *data_out = 0xFF;
@@ -145,7 +153,7 @@ bool Multitap::Transfer(const u8 data_in, u8* data_out)
 
       if (!ack)
       {
-        Log_DevPrintf("Memory card transfer ended");
+        DEV_LOG("Memory card transfer ended");
         m_transfer_state = TransferState::Idle;
       }
     }
@@ -203,7 +211,7 @@ bool Multitap::Transfer(const u8 data_in, u8* data_out)
 
       if (!ack)
       {
-        Log_DevPrintf("Controller transfer ended");
+        DEV_LOG("Controller transfer ended");
         m_transfer_state = TransferState::Idle;
       }
     }

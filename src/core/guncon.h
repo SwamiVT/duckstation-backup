@@ -1,24 +1,33 @@
+// SPDX-FileCopyrightText: 2019-2024 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
+
 #include "controller.h"
+
 #include <memory>
-#include <optional>
-#include <string_view>
 
 class GunCon final : public Controller
 {
 public:
-  enum class Button : u8
+  enum class Binding : u8
   {
     Trigger = 0,
     A = 1,
     B = 2,
     ShootOffscreen = 3,
-    Count
+    ButtonCount = 4,
+
+    RelativeLeft = 4,
+    RelativeRight = 5,
+    RelativeUp = 6,
+    RelativeDown = 7,
+    BindingCount = 8,
   };
 
   static const Controller::ControllerInfo INFO;
 
-  GunCon(u32 index);
+  explicit GunCon(u32 index);
   ~GunCon() override;
 
   static std::unique_ptr<GunCon> Create(u32 index);
@@ -27,9 +36,8 @@ public:
 
   void Reset() override;
   bool DoState(StateWrapper& sw, bool apply_input_state) override;
-  
-  void LoadSettings(SettingsInterface& si, const char* section) override;
-  bool GetSoftwareCursor(const Common::RGBA8Image** image, float* image_scale, bool* relative_mode) override;
+
+  void LoadSettings(const SettingsInterface& si, const char* section, bool initial) override;
 
   float GetBindState(u32 index) const override;
   void SetBindState(u32 index, float value) override;
@@ -38,8 +46,6 @@ public:
   bool Transfer(const u8 data_in, u8* data_out) override;
 
 private:
-  void UpdatePosition();
-
   enum class TransferState : u8
   {
     Idle,
@@ -53,9 +59,20 @@ private:
     YMSB
   };
 
-  Common::RGBA8Image m_crosshair_image;
-  std::string m_crosshair_image_path;
-  float m_crosshair_image_scale = 1.0f;
+  static constexpr s8 DEFAULT_LINE_OFFSET = 0;
+  static constexpr s16 DEFAULT_TICK_OFFSET = -140;
+
+  void UpdatePosition();
+
+  // 0..1, not -1..1.
+  std::pair<float, float> GetAbsolutePositionFromRelativeAxes() const;
+  bool CanUseSoftwareCursor() const;
+  u32 GetSoftwarePointerIndex() const;
+  void UpdateSoftwarePointerPosition();
+
+  s16 m_tick_offset = DEFAULT_TICK_OFFSET;
+  s8 m_line_offset = DEFAULT_LINE_OFFSET;
+  bool m_has_relative_binds = false;
   float m_x_scale = 1.0f;
 
   // buttons are active low
@@ -65,4 +82,11 @@ private:
   bool m_shoot_offscreen = false;
 
   TransferState m_transfer_state = TransferState::Idle;
+
+  float m_relative_pos[4] = {};
+  u8 m_cursor_index = 0;
+
+  float m_cursor_scale = 1.0f;
+  u32 m_cursor_color = 0xFFFFFFFFu;
+  std::string m_cursor_path;
 };

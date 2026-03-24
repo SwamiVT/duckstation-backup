@@ -1,39 +1,63 @@
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #include "qtutils.h"
-#include "common/byte_stream.h"
-#include "common/make_array.h"
+#include "qthost.h"
+
+#include "core/core.h"
+#include "core/game_list.h"
 #include "core/system.h"
-#include "frontend-common/game_list.h"
-#include <QtCore/QCoreApplication>
+
+#include "util/input_manager.h"
+
+#include "common/error.h"
+#include "common/log.h"
+
 #include <QtCore/QMetaObject>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QScreen>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QGridLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QInputDialog>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QSlider>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QTableView>
 #include <QtWidgets/QTreeView>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 
-#if !defined(_WIN32) && !defined(APPLE)
-#include <qpa/qplatformnativeinterface.h>
+#if defined(__APPLE__)
+#include "common/thirdparty/usb_key_code_data.h"
 #endif
 
-#ifdef _WIN32
-#include "common/windows_headers.h"
-#endif
+LOG_CHANNEL(Host);
+
+using namespace Qt::StringLiterals;
 
 namespace QtUtils {
 
-QFrame* CreateHorizontalLine(QWidget* parent)
+static bool TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget);
+static void SetMessageBoxStyle(QMessageBox* const dlg);
+
+static constexpr const char* WINDOW_GEOMETRY_CONFIG_SECTION = "UI";
+
+} // namespace QtUtils
+
+QFrame* QtUtils::CreateHorizontalLine(QWidget* parent)
 {
   QFrame* line = new QFrame(parent);
   line->setFrameShape(QFrame::HLine);
@@ -41,707 +65,89 @@ QFrame* CreateHorizontalLine(QWidget* parent)
   return line;
 }
 
-QWidget* GetRootWidget(QWidget* widget, bool stop_at_window_or_dialog)
+void QtUtils::ShowOrRaiseWindow(QWidget* window, const QWidget* parent_window, bool restore_geometry)
 {
-  QWidget* next_parent = widget->parentWidget();
-  while (next_parent)
+  if (!window)
+    return;
+
+  if (!window->isVisible())
   {
-    if (stop_at_window_or_dialog && (widget->metaObject()->inherits(&QMainWindow::staticMetaObject) ||
-                                     widget->metaObject()->inherits(&QDialog::staticMetaObject)))
-    {
-      break;
-    }
+    bool restored = false;
+    if (restore_geometry)
+      restored = RestoreWindowGeometry(window);
 
-    widget = next_parent;
-    next_parent = widget->parentWidget();
+    // NOTE: Must be before centering the window, otherwise the size may not be correct.
+    window->show();
+
+    if (!restored && parent_window && parent_window->isVisible())
+      CenterWindowRelativeToParent(window, parent_window);
   }
-
-  return widget;
-}
-
-template<typename T>
-ALWAYS_INLINE_RELEASE static void ResizeColumnsForView(T* view, const std::initializer_list<int>& widths)
-{
-  QHeaderView* header;
-  if constexpr (std::is_same_v<T, QTableView>)
-    header = view->horizontalHeader();
   else
-    header = view->header();
+  {
+    window->raise();
+    window->activateWindow();
+    window->setFocus();
+  }
+}
 
-  const int min_column_width = header->minimumSectionSize();
-  const int scrollbar_width = ((view->verticalScrollBar() && view->verticalScrollBar()->isVisible()) ||
-                               view->verticalScrollBarPolicy() == Qt::ScrollBarAlwaysOn) ?
-                                view->verticalScrollBar()->width() :
-                                0;
-  int num_flex_items = 0;
-  int total_width = 0;
+void QtUtils::RaiseWindow(QWidget* window)
+{
+  if (!window->isVisible())
+    return;
+
+  window->raise();
+  window->activateWindow();
+  window->setFocus();
+}
+
+template<class T>
+static void SetColumnWidthForView(T* const view, QHeaderView* const header, const std::initializer_list<int>& widths)
+{
   int column_index = 0;
-  for (const int spec_width : widths)
+  for (const int width : widths)
   {
-    if (!view->isColumnHidden(column_index))
+    if (width <= 0)
     {
-      if (spec_width < 0)
-        num_flex_items++;
-      else
-        total_width += std::max(spec_width, min_column_width);
+      header->setSectionResizeMode(column_index, (width < 0) ? QHeaderView::Stretch : QHeaderView::ResizeToContents);
+    }
+    else
+    {
+      header->setSectionResizeMode(column_index, QHeaderView::Fixed);
+      view->setColumnWidth(column_index, width);
     }
 
     column_index++;
   }
 
-  const int flex_width =
-    (num_flex_items > 0) ?
-      std::max((view->contentsRect().width() - total_width - scrollbar_width) / num_flex_items, 1) :
-      0;
-
-  column_index = 0;
-  for (const int spec_width : widths)
-  {
-    if (view->isColumnHidden(column_index))
-    {
-      column_index++;
-      continue;
-    }
-
-    const int width = spec_width < 0 ? flex_width : (std::max(spec_width, min_column_width));
-    view->setColumnWidth(column_index, width);
-    column_index++;
-  }
+  header->setStretchLastSection(false);
 }
 
-void ResizeColumnsForTableView(QTableView* view, const std::initializer_list<int>& widths)
+void QtUtils::SetColumnWidthsForTableView(QTableView* view, const std::initializer_list<int>& widths)
 {
-  ResizeColumnsForView(view, widths);
+  SetColumnWidthForView(view, view->horizontalHeader(), widths);
 }
 
-void ResizeColumnsForTreeView(QTreeView* view, const std::initializer_list<int>& widths)
+void QtUtils::SetColumnWidthsForTreeView(QTreeView* view, const std::initializer_list<int>& widths)
 {
-  ResizeColumnsForView(view, widths);
+  SetColumnWidthForView(view, view->header(), widths);
 }
 
-static const std::map<int, QString> s_qt_key_names = {
-  {Qt::Key_Escape, QStringLiteral("Escape")},
-  {Qt::Key_Tab, QStringLiteral("Tab")},
-  {Qt::Key_Backtab, QStringLiteral("Backtab")},
-  {Qt::Key_Backspace, QStringLiteral("Backspace")},
-  {Qt::Key_Return, QStringLiteral("Return")},
-  {Qt::Key_Enter, QStringLiteral("Enter")},
-  {Qt::Key_Insert, QStringLiteral("Insert")},
-  {Qt::Key_Delete, QStringLiteral("Delete")},
-  {Qt::Key_Pause, QStringLiteral("Pause")},
-  {Qt::Key_Print, QStringLiteral("Print")},
-  {Qt::Key_SysReq, QStringLiteral("SysReq")},
-  {Qt::Key_Clear, QStringLiteral("Clear")},
-  {Qt::Key_Home, QStringLiteral("Home")},
-  {Qt::Key_End, QStringLiteral("End")},
-  {Qt::Key_Left, QStringLiteral("Left")},
-  {Qt::Key_Up, QStringLiteral("Up")},
-  {Qt::Key_Right, QStringLiteral("Right")},
-  {Qt::Key_Down, QStringLiteral("Down")},
-  {Qt::Key_PageUp, QStringLiteral("PageUp")},
-  {Qt::Key_PageDown, QStringLiteral("PageDown")},
-  {Qt::Key_Shift, QStringLiteral("Shift")},
-  {Qt::Key_Control, QStringLiteral("Control")},
-  {Qt::Key_Meta, QStringLiteral("Meta")},
-  {Qt::Key_Alt, QStringLiteral("Alt")},
-  {Qt::Key_CapsLock, QStringLiteral("CapsLock")},
-  {Qt::Key_NumLock, QStringLiteral("NumLock")},
-  {Qt::Key_ScrollLock, QStringLiteral("ScrollLock")},
-  {Qt::Key_F1, QStringLiteral("F1")},
-  {Qt::Key_F2, QStringLiteral("F2")},
-  {Qt::Key_F3, QStringLiteral("F3")},
-  {Qt::Key_F4, QStringLiteral("F4")},
-  {Qt::Key_F5, QStringLiteral("F5")},
-  {Qt::Key_F6, QStringLiteral("F6")},
-  {Qt::Key_F7, QStringLiteral("F7")},
-  {Qt::Key_F8, QStringLiteral("F8")},
-  {Qt::Key_F9, QStringLiteral("F9")},
-  {Qt::Key_F10, QStringLiteral("F10")},
-  {Qt::Key_F11, QStringLiteral("F11")},
-  {Qt::Key_F12, QStringLiteral("F12")},
-  {Qt::Key_F13, QStringLiteral("F13")},
-  {Qt::Key_F14, QStringLiteral("F14")},
-  {Qt::Key_F15, QStringLiteral("F15")},
-  {Qt::Key_F16, QStringLiteral("F16")},
-  {Qt::Key_F17, QStringLiteral("F17")},
-  {Qt::Key_F18, QStringLiteral("F18")},
-  {Qt::Key_F19, QStringLiteral("F19")},
-  {Qt::Key_F20, QStringLiteral("F20")},
-  {Qt::Key_F21, QStringLiteral("F21")},
-  {Qt::Key_F22, QStringLiteral("F22")},
-  {Qt::Key_F23, QStringLiteral("F23")},
-  {Qt::Key_F24, QStringLiteral("F24")},
-  {Qt::Key_F25, QStringLiteral("F25")},
-  {Qt::Key_F26, QStringLiteral("F26")},
-  {Qt::Key_F27, QStringLiteral("F27")},
-  {Qt::Key_F28, QStringLiteral("F28")},
-  {Qt::Key_F29, QStringLiteral("F29")},
-  {Qt::Key_F30, QStringLiteral("F30")},
-  {Qt::Key_F31, QStringLiteral("F31")},
-  {Qt::Key_F32, QStringLiteral("F32")},
-  {Qt::Key_F33, QStringLiteral("F33")},
-  {Qt::Key_F34, QStringLiteral("F34")},
-  {Qt::Key_F35, QStringLiteral("F35")},
-  {Qt::Key_Super_L, QStringLiteral("Super_L")},
-  {Qt::Key_Super_R, QStringLiteral("Super_R")},
-  {Qt::Key_Menu, QStringLiteral("Menu")},
-  {Qt::Key_Hyper_L, QStringLiteral("Hyper_L")},
-  {Qt::Key_Hyper_R, QStringLiteral("Hyper_R")},
-  {Qt::Key_Help, QStringLiteral("Help")},
-  {Qt::Key_Direction_L, QStringLiteral("Direction_L")},
-  {Qt::Key_Direction_R, QStringLiteral("Direction_R")},
-  {Qt::Key_Space, QStringLiteral("Space")},
-  {Qt::Key_Any, QStringLiteral("Any")},
-  {Qt::Key_Exclam, QStringLiteral("Exclam")},
-  {Qt::Key_QuoteDbl, QStringLiteral("QuoteDbl")},
-  {Qt::Key_NumberSign, QStringLiteral("NumberSign")},
-  {Qt::Key_Dollar, QStringLiteral("Dollar")},
-  {Qt::Key_Percent, QStringLiteral("Percent")},
-  {Qt::Key_Ampersand, QStringLiteral("Ampersand")},
-  {Qt::Key_Apostrophe, QStringLiteral("Apostrophe")},
-  {Qt::Key_ParenLeft, QStringLiteral("ParenLeft")},
-  {Qt::Key_ParenRight, QStringLiteral("ParenRight")},
-  {Qt::Key_Asterisk, QStringLiteral("Asterisk")},
-  {Qt::Key_Plus, QStringLiteral("Plus")},
-  {Qt::Key_Comma, QStringLiteral("Comma")},
-  {Qt::Key_Minus, QStringLiteral("Minus")},
-  {Qt::Key_Period, QStringLiteral("Period")},
-  {Qt::Key_Slash, QStringLiteral("Slash")},
-  {Qt::Key_0, QStringLiteral("0")},
-  {Qt::Key_1, QStringLiteral("1")},
-  {Qt::Key_2, QStringLiteral("2")},
-  {Qt::Key_3, QStringLiteral("3")},
-  {Qt::Key_4, QStringLiteral("4")},
-  {Qt::Key_5, QStringLiteral("5")},
-  {Qt::Key_6, QStringLiteral("6")},
-  {Qt::Key_7, QStringLiteral("7")},
-  {Qt::Key_8, QStringLiteral("8")},
-  {Qt::Key_9, QStringLiteral("9")},
-  {Qt::Key_Colon, QStringLiteral("Colon")},
-  {Qt::Key_Semicolon, QStringLiteral("Semicolon")},
-  {Qt::Key_Less, QStringLiteral("Less")},
-  {Qt::Key_Equal, QStringLiteral("Equal")},
-  {Qt::Key_Greater, QStringLiteral("Greater")},
-  {Qt::Key_Question, QStringLiteral("Question")},
-  {Qt::Key_At, QStringLiteral("At")},
-  {Qt::Key_A, QStringLiteral("A")},
-  {Qt::Key_B, QStringLiteral("B")},
-  {Qt::Key_C, QStringLiteral("C")},
-  {Qt::Key_D, QStringLiteral("D")},
-  {Qt::Key_E, QStringLiteral("E")},
-  {Qt::Key_F, QStringLiteral("F")},
-  {Qt::Key_G, QStringLiteral("G")},
-  {Qt::Key_H, QStringLiteral("H")},
-  {Qt::Key_I, QStringLiteral("I")},
-  {Qt::Key_J, QStringLiteral("J")},
-  {Qt::Key_K, QStringLiteral("K")},
-  {Qt::Key_L, QStringLiteral("L")},
-  {Qt::Key_M, QStringLiteral("M")},
-  {Qt::Key_N, QStringLiteral("N")},
-  {Qt::Key_O, QStringLiteral("O")},
-  {Qt::Key_P, QStringLiteral("P")},
-  {Qt::Key_Q, QStringLiteral("Q")},
-  {Qt::Key_R, QStringLiteral("R")},
-  {Qt::Key_S, QStringLiteral("S")},
-  {Qt::Key_T, QStringLiteral("T")},
-  {Qt::Key_U, QStringLiteral("U")},
-  {Qt::Key_V, QStringLiteral("V")},
-  {Qt::Key_W, QStringLiteral("W")},
-  {Qt::Key_X, QStringLiteral("X")},
-  {Qt::Key_Y, QStringLiteral("Y")},
-  {Qt::Key_Z, QStringLiteral("Z")},
-  {Qt::Key_BracketLeft, QStringLiteral("BracketLeft")},
-  {Qt::Key_Backslash, QStringLiteral("Backslash")},
-  {Qt::Key_BracketRight, QStringLiteral("BracketRight")},
-  {Qt::Key_AsciiCircum, QStringLiteral("AsciiCircum")},
-  {Qt::Key_Underscore, QStringLiteral("Underscore")},
-  {Qt::Key_QuoteLeft, QStringLiteral("QuoteLeft")},
-  {Qt::Key_BraceLeft, QStringLiteral("BraceLeft")},
-  {Qt::Key_Bar, QStringLiteral("Bar")},
-  {Qt::Key_BraceRight, QStringLiteral("BraceRight")},
-  {Qt::Key_AsciiTilde, QStringLiteral("AsciiTilde")},
-  {Qt::Key_nobreakspace, QStringLiteral("nobreakspace")},
-  {Qt::Key_exclamdown, QStringLiteral("exclamdown")},
-  {Qt::Key_cent, QStringLiteral("cent")},
-  {Qt::Key_sterling, QStringLiteral("sterling")},
-  {Qt::Key_currency, QStringLiteral("currency")},
-  {Qt::Key_yen, QStringLiteral("yen")},
-  {Qt::Key_brokenbar, QStringLiteral("brokenbar")},
-  {Qt::Key_section, QStringLiteral("section")},
-  {Qt::Key_diaeresis, QStringLiteral("diaeresis")},
-  {Qt::Key_copyright, QStringLiteral("copyright")},
-  {Qt::Key_ordfeminine, QStringLiteral("ordfeminine")},
-  {Qt::Key_guillemotleft, QStringLiteral("guillemotleft")},
-  {Qt::Key_notsign, QStringLiteral("notsign")},
-  {Qt::Key_hyphen, QStringLiteral("hyphen")},
-  {Qt::Key_registered, QStringLiteral("registered")},
-  {Qt::Key_macron, QStringLiteral("macron")},
-  {Qt::Key_degree, QStringLiteral("degree")},
-  {Qt::Key_plusminus, QStringLiteral("plusminus")},
-  {Qt::Key_twosuperior, QStringLiteral("twosuperior")},
-  {Qt::Key_threesuperior, QStringLiteral("threesuperior")},
-  {Qt::Key_acute, QStringLiteral("acute")},
-  {Qt::Key_mu, QStringLiteral("mu")},
-  {Qt::Key_paragraph, QStringLiteral("paragraph")},
-  {Qt::Key_periodcentered, QStringLiteral("periodcentered")},
-  {Qt::Key_cedilla, QStringLiteral("cedilla")},
-  {Qt::Key_onesuperior, QStringLiteral("onesuperior")},
-  {Qt::Key_masculine, QStringLiteral("masculine")},
-  {Qt::Key_guillemotright, QStringLiteral("guillemotright")},
-  {Qt::Key_onequarter, QStringLiteral("onequarter")},
-  {Qt::Key_onehalf, QStringLiteral("onehalf")},
-  {Qt::Key_threequarters, QStringLiteral("threequarters")},
-  {Qt::Key_questiondown, QStringLiteral("questiondown")},
-  {Qt::Key_Agrave, QStringLiteral("Agrave")},
-  {Qt::Key_Aacute, QStringLiteral("Aacute")},
-  {Qt::Key_Acircumflex, QStringLiteral("Acircumflex")},
-  {Qt::Key_Atilde, QStringLiteral("Atilde")},
-  {Qt::Key_Adiaeresis, QStringLiteral("Adiaeresis")},
-  {Qt::Key_Aring, QStringLiteral("Aring")},
-  {Qt::Key_AE, QStringLiteral("AE")},
-  {Qt::Key_Ccedilla, QStringLiteral("Ccedilla")},
-  {Qt::Key_Egrave, QStringLiteral("Egrave")},
-  {Qt::Key_Eacute, QStringLiteral("Eacute")},
-  {Qt::Key_Ecircumflex, QStringLiteral("Ecircumflex")},
-  {Qt::Key_Ediaeresis, QStringLiteral("Ediaeresis")},
-  {Qt::Key_Igrave, QStringLiteral("Igrave")},
-  {Qt::Key_Iacute, QStringLiteral("Iacute")},
-  {Qt::Key_Icircumflex, QStringLiteral("Icircumflex")},
-  {Qt::Key_Idiaeresis, QStringLiteral("Idiaeresis")},
-  {Qt::Key_ETH, QStringLiteral("ETH")},
-  {Qt::Key_Ntilde, QStringLiteral("Ntilde")},
-  {Qt::Key_Ograve, QStringLiteral("Ograve")},
-  {Qt::Key_Oacute, QStringLiteral("Oacute")},
-  {Qt::Key_Ocircumflex, QStringLiteral("Ocircumflex")},
-  {Qt::Key_Otilde, QStringLiteral("Otilde")},
-  {Qt::Key_Odiaeresis, QStringLiteral("Odiaeresis")},
-  {Qt::Key_multiply, QStringLiteral("multiply")},
-  {Qt::Key_Ooblique, QStringLiteral("Ooblique")},
-  {Qt::Key_Ugrave, QStringLiteral("Ugrave")},
-  {Qt::Key_Uacute, QStringLiteral("Uacute")},
-  {Qt::Key_Ucircumflex, QStringLiteral("Ucircumflex")},
-  {Qt::Key_Udiaeresis, QStringLiteral("Udiaeresis")},
-  {Qt::Key_Yacute, QStringLiteral("Yacute")},
-  {Qt::Key_THORN, QStringLiteral("THORN")},
-  {Qt::Key_ssharp, QStringLiteral("ssharp")},
-  {Qt::Key_division, QStringLiteral("division")},
-  {Qt::Key_ydiaeresis, QStringLiteral("ydiaeresis")},
-  {Qt::Key_AltGr, QStringLiteral("AltGr")},
-  {Qt::Key_Multi_key, QStringLiteral("Multi_key")},
-  {Qt::Key_Codeinput, QStringLiteral("Codeinput")},
-  {Qt::Key_SingleCandidate, QStringLiteral("SingleCandidate")},
-  {Qt::Key_MultipleCandidate, QStringLiteral("MultipleCandidate")},
-  {Qt::Key_PreviousCandidate, QStringLiteral("PreviousCandidate")},
-  {Qt::Key_Mode_switch, QStringLiteral("Mode_switch")},
-  {Qt::Key_Kanji, QStringLiteral("Kanji")},
-  {Qt::Key_Muhenkan, QStringLiteral("Muhenkan")},
-  {Qt::Key_Henkan, QStringLiteral("Henkan")},
-  {Qt::Key_Romaji, QStringLiteral("Romaji")},
-  {Qt::Key_Hiragana, QStringLiteral("Hiragana")},
-  {Qt::Key_Katakana, QStringLiteral("Katakana")},
-  {Qt::Key_Hiragana_Katakana, QStringLiteral("Hiragana_Katakana")},
-  {Qt::Key_Zenkaku, QStringLiteral("Zenkaku")},
-  {Qt::Key_Hankaku, QStringLiteral("Hankaku")},
-  {Qt::Key_Zenkaku_Hankaku, QStringLiteral("Zenkaku_Hankaku")},
-  {Qt::Key_Touroku, QStringLiteral("Touroku")},
-  {Qt::Key_Massyo, QStringLiteral("Massyo")},
-  {Qt::Key_Kana_Lock, QStringLiteral("Kana_Lock")},
-  {Qt::Key_Kana_Shift, QStringLiteral("Kana_Shift")},
-  {Qt::Key_Eisu_Shift, QStringLiteral("Eisu_Shift")},
-  {Qt::Key_Eisu_toggle, QStringLiteral("Eisu_toggle")},
-  {Qt::Key_Hangul, QStringLiteral("Hangul")},
-  {Qt::Key_Hangul_Start, QStringLiteral("Hangul_Start")},
-  {Qt::Key_Hangul_End, QStringLiteral("Hangul_End")},
-  {Qt::Key_Hangul_Hanja, QStringLiteral("Hangul_Hanja")},
-  {Qt::Key_Hangul_Jamo, QStringLiteral("Hangul_Jamo")},
-  {Qt::Key_Hangul_Romaja, QStringLiteral("Hangul_Romaja")},
-  {Qt::Key_Hangul_Jeonja, QStringLiteral("Hangul_Jeonja")},
-  {Qt::Key_Hangul_Banja, QStringLiteral("Hangul_Banja")},
-  {Qt::Key_Hangul_PreHanja, QStringLiteral("Hangul_PreHanja")},
-  {Qt::Key_Hangul_PostHanja, QStringLiteral("Hangul_PostHanja")},
-  {Qt::Key_Hangul_Special, QStringLiteral("Hangul_Special")},
-  {Qt::Key_Dead_Grave, QStringLiteral("Dead_Grave")},
-  {Qt::Key_Dead_Acute, QStringLiteral("Dead_Acute")},
-  {Qt::Key_Dead_Circumflex, QStringLiteral("Dead_Circumflex")},
-  {Qt::Key_Dead_Tilde, QStringLiteral("Dead_Tilde")},
-  {Qt::Key_Dead_Macron, QStringLiteral("Dead_Macron")},
-  {Qt::Key_Dead_Breve, QStringLiteral("Dead_Breve")},
-  {Qt::Key_Dead_Abovedot, QStringLiteral("Dead_Abovedot")},
-  {Qt::Key_Dead_Diaeresis, QStringLiteral("Dead_Diaeresis")},
-  {Qt::Key_Dead_Abovering, QStringLiteral("Dead_Abovering")},
-  {Qt::Key_Dead_Doubleacute, QStringLiteral("Dead_Doubleacute")},
-  {Qt::Key_Dead_Caron, QStringLiteral("Dead_Caron")},
-  {Qt::Key_Dead_Cedilla, QStringLiteral("Dead_Cedilla")},
-  {Qt::Key_Dead_Ogonek, QStringLiteral("Dead_Ogonek")},
-  {Qt::Key_Dead_Iota, QStringLiteral("Dead_Iota")},
-  {Qt::Key_Dead_Voiced_Sound, QStringLiteral("Dead_Voiced_Sound")},
-  {Qt::Key_Dead_Semivoiced_Sound, QStringLiteral("Dead_Semivoiced_Sound")},
-  {Qt::Key_Dead_Belowdot, QStringLiteral("Dead_Belowdot")},
-  {Qt::Key_Dead_Hook, QStringLiteral("Dead_Hook")},
-  {Qt::Key_Dead_Horn, QStringLiteral("Dead_Horn")},
-  {Qt::Key_Back, QStringLiteral("Back")},
-  {Qt::Key_Forward, QStringLiteral("Forward")},
-  {Qt::Key_Stop, QStringLiteral("Stop")},
-  {Qt::Key_Refresh, QStringLiteral("Refresh")},
-  {Qt::Key_VolumeDown, QStringLiteral("VolumeDown")},
-  {Qt::Key_VolumeMute, QStringLiteral("VolumeMute")},
-  {Qt::Key_VolumeUp, QStringLiteral("VolumeUp")},
-  {Qt::Key_BassBoost, QStringLiteral("BassBoost")},
-  {Qt::Key_BassUp, QStringLiteral("BassUp")},
-  {Qt::Key_BassDown, QStringLiteral("BassDown")},
-  {Qt::Key_TrebleUp, QStringLiteral("TrebleUp")},
-  {Qt::Key_TrebleDown, QStringLiteral("TrebleDown")},
-  {Qt::Key_MediaPlay, QStringLiteral("MediaPlay")},
-  {Qt::Key_MediaStop, QStringLiteral("MediaStop")},
-  {Qt::Key_MediaPrevious, QStringLiteral("MediaPrevious")},
-  {Qt::Key_MediaNext, QStringLiteral("MediaNext")},
-  {Qt::Key_MediaRecord, QStringLiteral("MediaRecord")},
-  {Qt::Key_MediaPause, QStringLiteral("MediaPause")},
-  {Qt::Key_MediaTogglePlayPause, QStringLiteral("MediaTogglePlayPause")},
-  {Qt::Key_HomePage, QStringLiteral("HomePage")},
-  {Qt::Key_Favorites, QStringLiteral("Favorites")},
-  {Qt::Key_Search, QStringLiteral("Search")},
-  {Qt::Key_Standby, QStringLiteral("Standby")},
-  {Qt::Key_OpenUrl, QStringLiteral("OpenUrl")},
-  {Qt::Key_LaunchMail, QStringLiteral("LaunchMail")},
-  {Qt::Key_LaunchMedia, QStringLiteral("LaunchMedia")},
-  {Qt::Key_Launch0, QStringLiteral("Launch0")},
-  {Qt::Key_Launch1, QStringLiteral("Launch1")},
-  {Qt::Key_Launch2, QStringLiteral("Launch2")},
-  {Qt::Key_Launch3, QStringLiteral("Launch3")},
-  {Qt::Key_Launch4, QStringLiteral("Launch4")},
-  {Qt::Key_Launch5, QStringLiteral("Launch5")},
-  {Qt::Key_Launch6, QStringLiteral("Launch6")},
-  {Qt::Key_Launch7, QStringLiteral("Launch7")},
-  {Qt::Key_Launch8, QStringLiteral("Launch8")},
-  {Qt::Key_Launch9, QStringLiteral("Launch9")},
-  {Qt::Key_LaunchA, QStringLiteral("LaunchA")},
-  {Qt::Key_LaunchB, QStringLiteral("LaunchB")},
-  {Qt::Key_LaunchC, QStringLiteral("LaunchC")},
-  {Qt::Key_LaunchD, QStringLiteral("LaunchD")},
-  {Qt::Key_LaunchE, QStringLiteral("LaunchE")},
-  {Qt::Key_LaunchF, QStringLiteral("LaunchF")},
-  {Qt::Key_MonBrightnessUp, QStringLiteral("MonBrightnessUp")},
-  {Qt::Key_MonBrightnessDown, QStringLiteral("MonBrightnessDown")},
-  {Qt::Key_KeyboardLightOnOff, QStringLiteral("KeyboardLightOnOff")},
-  {Qt::Key_KeyboardBrightnessUp, QStringLiteral("KeyboardBrightnessUp")},
-  {Qt::Key_KeyboardBrightnessDown, QStringLiteral("KeyboardBrightnessDown")},
-  {Qt::Key_PowerOff, QStringLiteral("PowerOff")},
-  {Qt::Key_WakeUp, QStringLiteral("WakeUp")},
-  {Qt::Key_Eject, QStringLiteral("Eject")},
-  {Qt::Key_ScreenSaver, QStringLiteral("ScreenSaver")},
-  {Qt::Key_WWW, QStringLiteral("WWW")},
-  {Qt::Key_Memo, QStringLiteral("Memo")},
-  {Qt::Key_LightBulb, QStringLiteral("LightBulb")},
-  {Qt::Key_Shop, QStringLiteral("Shop")},
-  {Qt::Key_History, QStringLiteral("History")},
-  {Qt::Key_AddFavorite, QStringLiteral("AddFavorite")},
-  {Qt::Key_HotLinks, QStringLiteral("HotLinks")},
-  {Qt::Key_BrightnessAdjust, QStringLiteral("BrightnessAdjust")},
-  {Qt::Key_Finance, QStringLiteral("Finance")},
-  {Qt::Key_Community, QStringLiteral("Community")},
-  {Qt::Key_AudioRewind, QStringLiteral("AudioRewind")},
-  {Qt::Key_BackForward, QStringLiteral("BackForward")},
-  {Qt::Key_ApplicationLeft, QStringLiteral("ApplicationLeft")},
-  {Qt::Key_ApplicationRight, QStringLiteral("ApplicationRight")},
-  {Qt::Key_Book, QStringLiteral("Book")},
-  {Qt::Key_CD, QStringLiteral("CD")},
-  {Qt::Key_Calculator, QStringLiteral("Calculator")},
-  {Qt::Key_ToDoList, QStringLiteral("ToDoList")},
-  {Qt::Key_ClearGrab, QStringLiteral("ClearGrab")},
-  {Qt::Key_Close, QStringLiteral("Close")},
-  {Qt::Key_Copy, QStringLiteral("Copy")},
-  {Qt::Key_Cut, QStringLiteral("Cut")},
-  {Qt::Key_Display, QStringLiteral("Display")},
-  {Qt::Key_DOS, QStringLiteral("DOS")},
-  {Qt::Key_Documents, QStringLiteral("Documents")},
-  {Qt::Key_Excel, QStringLiteral("Excel")},
-  {Qt::Key_Explorer, QStringLiteral("Explorer")},
-  {Qt::Key_Game, QStringLiteral("Game")},
-  {Qt::Key_Go, QStringLiteral("Go")},
-  {Qt::Key_iTouch, QStringLiteral("iTouch")},
-  {Qt::Key_LogOff, QStringLiteral("LogOff")},
-  {Qt::Key_Market, QStringLiteral("Market")},
-  {Qt::Key_Meeting, QStringLiteral("Meeting")},
-  {Qt::Key_MenuKB, QStringLiteral("MenuKB")},
-  {Qt::Key_MenuPB, QStringLiteral("MenuPB")},
-  {Qt::Key_MySites, QStringLiteral("MySites")},
-  {Qt::Key_News, QStringLiteral("News")},
-  {Qt::Key_OfficeHome, QStringLiteral("OfficeHome")},
-  {Qt::Key_Option, QStringLiteral("Option")},
-  {Qt::Key_Paste, QStringLiteral("Paste")},
-  {Qt::Key_Phone, QStringLiteral("Phone")},
-  {Qt::Key_Calendar, QStringLiteral("Calendar")},
-  {Qt::Key_Reply, QStringLiteral("Reply")},
-  {Qt::Key_Reload, QStringLiteral("Reload")},
-  {Qt::Key_RotateWindows, QStringLiteral("RotateWindows")},
-  {Qt::Key_RotationPB, QStringLiteral("RotationPB")},
-  {Qt::Key_RotationKB, QStringLiteral("RotationKB")},
-  {Qt::Key_Save, QStringLiteral("Save")},
-  {Qt::Key_Send, QStringLiteral("Send")},
-  {Qt::Key_Spell, QStringLiteral("Spell")},
-  {Qt::Key_SplitScreen, QStringLiteral("SplitScreen")},
-  {Qt::Key_Support, QStringLiteral("Support")},
-  {Qt::Key_TaskPane, QStringLiteral("TaskPane")},
-  {Qt::Key_Terminal, QStringLiteral("Terminal")},
-  {Qt::Key_Tools, QStringLiteral("Tools")},
-  {Qt::Key_Travel, QStringLiteral("Travel")},
-  {Qt::Key_Video, QStringLiteral("Video")},
-  {Qt::Key_Word, QStringLiteral("Word")},
-  {Qt::Key_Xfer, QStringLiteral("Xfer")},
-  {Qt::Key_ZoomIn, QStringLiteral("ZoomIn")},
-  {Qt::Key_ZoomOut, QStringLiteral("ZoomOut")},
-  {Qt::Key_Away, QStringLiteral("Away")},
-  {Qt::Key_Messenger, QStringLiteral("Messenger")},
-  {Qt::Key_WebCam, QStringLiteral("WebCam")},
-  {Qt::Key_MailForward, QStringLiteral("MailForward")},
-  {Qt::Key_Pictures, QStringLiteral("Pictures")},
-  {Qt::Key_Music, QStringLiteral("Music")},
-  {Qt::Key_Battery, QStringLiteral("Battery")},
-  {Qt::Key_Bluetooth, QStringLiteral("Bluetooth")},
-  {Qt::Key_WLAN, QStringLiteral("WLAN")},
-  {Qt::Key_UWB, QStringLiteral("UWB")},
-  {Qt::Key_AudioForward, QStringLiteral("AudioForward")},
-  {Qt::Key_AudioRepeat, QStringLiteral("AudioRepeat")},
-  {Qt::Key_AudioRandomPlay, QStringLiteral("AudioRandomPlay")},
-  {Qt::Key_Subtitle, QStringLiteral("Subtitle")},
-  {Qt::Key_AudioCycleTrack, QStringLiteral("AudioCycleTrack")},
-  {Qt::Key_Time, QStringLiteral("Time")},
-  {Qt::Key_Hibernate, QStringLiteral("Hibernate")},
-  {Qt::Key_View, QStringLiteral("View")},
-  {Qt::Key_TopMenu, QStringLiteral("TopMenu")},
-  {Qt::Key_PowerDown, QStringLiteral("PowerDown")},
-  {Qt::Key_Suspend, QStringLiteral("Suspend")},
-  {Qt::Key_ContrastAdjust, QStringLiteral("ContrastAdjust")},
-  {Qt::Key_LaunchG, QStringLiteral("LaunchG")},
-  {Qt::Key_LaunchH, QStringLiteral("LaunchH")},
-  {Qt::Key_TouchpadToggle, QStringLiteral("TouchpadToggle")},
-  {Qt::Key_TouchpadOn, QStringLiteral("TouchpadOn")},
-  {Qt::Key_TouchpadOff, QStringLiteral("TouchpadOff")},
-  {Qt::Key_MicMute, QStringLiteral("MicMute")},
-  {Qt::Key_Red, QStringLiteral("Red")},
-  {Qt::Key_Green, QStringLiteral("Green")},
-  {Qt::Key_Yellow, QStringLiteral("Yellow")},
-  {Qt::Key_Blue, QStringLiteral("Blue")},
-  {Qt::Key_ChannelUp, QStringLiteral("ChannelUp")},
-  {Qt::Key_ChannelDown, QStringLiteral("ChannelDown")},
-  {Qt::Key_Guide, QStringLiteral("Guide")},
-  {Qt::Key_Info, QStringLiteral("Info")},
-  {Qt::Key_Settings, QStringLiteral("Settings")},
-  {Qt::Key_MicVolumeUp, QStringLiteral("MicVolumeUp")},
-  {Qt::Key_MicVolumeDown, QStringLiteral("MicVolumeDown")},
-  {Qt::Key_New, QStringLiteral("New")},
-  {Qt::Key_Open, QStringLiteral("Open")},
-  {Qt::Key_Find, QStringLiteral("Find")},
-  {Qt::Key_Undo, QStringLiteral("Undo")},
-  {Qt::Key_Redo, QStringLiteral("Redo")},
-  {Qt::Key_MediaLast, QStringLiteral("MediaLast")},
-  {Qt::Key_Select, QStringLiteral("Select")},
-  {Qt::Key_Yes, QStringLiteral("Yes")},
-  {Qt::Key_No, QStringLiteral("No")},
-  {Qt::Key_Cancel, QStringLiteral("Cancel")},
-  {Qt::Key_Printer, QStringLiteral("Printer")},
-  {Qt::Key_Execute, QStringLiteral("Execute")},
-  {Qt::Key_Sleep, QStringLiteral("Sleep")},
-  {Qt::Key_Play, QStringLiteral("Play")},
-  {Qt::Key_Zoom, QStringLiteral("Zoom")},
-  {Qt::Key_Exit, QStringLiteral("Exit")},
-  {Qt::Key_Context1, QStringLiteral("Context1")},
-  {Qt::Key_Context2, QStringLiteral("Context2")},
-  {Qt::Key_Context3, QStringLiteral("Context3")},
-  {Qt::Key_Context4, QStringLiteral("Context4")},
-  {Qt::Key_Call, QStringLiteral("Call")},
-  {Qt::Key_Hangup, QStringLiteral("Hangup")},
-  {Qt::Key_Flip, QStringLiteral("Flip")},
-  {Qt::Key_ToggleCallHangup, QStringLiteral("ToggleCallHangup")},
-  {Qt::Key_VoiceDial, QStringLiteral("VoiceDial")},
-  {Qt::Key_LastNumberRedial, QStringLiteral("LastNumberRedial")},
-  {Qt::Key_Camera, QStringLiteral("Camera")},
-  {Qt::Key_CameraFocus, QStringLiteral("CameraFocus")}};
-
-struct QtKeyModifierEntry
-{
-  Qt::KeyboardModifier mod;
-  Qt::Key key;
-  QString name;
-};
-
-static const std::array<QtKeyModifierEntry, 5> s_qt_key_modifiers = {
-  {{Qt::ShiftModifier, Qt::Key_Shift, QStringLiteral("Shift")},
-   {Qt::ControlModifier, Qt::Key_Control, QStringLiteral("Control")},
-   {Qt::AltModifier, Qt::Key_Alt, QStringLiteral("Alt")},
-   {Qt::MetaModifier, Qt::Key_Meta, QStringLiteral("Meta")},
-   {Qt::KeypadModifier, static_cast<Qt::Key>(0), QStringLiteral("Keypad")}}};
-
-QString GetKeyIdentifier(int key)
-{
-  const auto it = s_qt_key_names.find(key);
-  return it == s_qt_key_names.end() ? QString() : it->second;
-}
-
-std::optional<int> GetKeyIdForIdentifier(const QString& key_identifier)
-{
-  for (const auto& it : s_qt_key_names)
-  {
-    if (it.second == key_identifier)
-      return it.first;
-  }
-
-  return std::nullopt;
-}
-
-QString KeyEventToString(int key, Qt::KeyboardModifiers mods)
-{
-  QString key_name = GetKeyIdentifier(key);
-  if (key_name.isEmpty())
-    return {};
-
-  QString ret;
-  for (const QtKeyModifierEntry& mod : s_qt_key_modifiers)
-  {
-    if (mods & mod.mod && key != mod.key)
-    {
-      ret.append(mod.name);
-      ret.append('+');
-    }
-  }
-
-  ret.append(key_name);
-  return ret;
-}
-
-std::optional<int> ParseKeyString(const QString& key_str)
-{
-  const QStringList sections = key_str.split('+');
-  std::optional<int> key_id = GetKeyIdForIdentifier(sections.last());
-  if (!key_id)
-    return std::nullopt;
-
-  int ret = key_id.value();
-
-  if (sections.size() > 1)
-  {
-    const int num_modifiers = sections.size() - 1;
-    for (int i = 0; i < num_modifiers; i++)
-    {
-      for (const QtKeyModifierEntry& mod : s_qt_key_modifiers)
-      {
-        if (sections[i] == mod.name)
-        {
-          ret |= static_cast<int>(mod.mod);
-          break;
-        }
-      }
-    }
-  }
-
-  return ret;
-}
-
-int KeyEventToInt(int key, Qt::KeyboardModifiers mods)
-{
-  int val = key;
-  if (mods != 0)
-  {
-    for (const QtKeyModifierEntry& mod : s_qt_key_modifiers)
-    {
-      if (mods & mod.mod && key != mod.key)
-        val |= static_cast<int>(mod.mod);
-    }
-  }
-
-  return val;
-}
-
-QByteArray ReadStreamToQByteArray(ByteStream* stream, bool rewind /*= false*/)
-{
-  QByteArray ret;
-  const u64 old_pos = stream->GetPosition();
-  if (rewind && !stream->SeekAbsolute(0))
-    return {};
-
-  const u64 stream_size = stream->GetSize() - stream->GetPosition();
-  ret.resize(static_cast<int>(stream_size));
-  if (stream_size > 0 && !stream->Read2(ret.data(), static_cast<u32>(stream_size), nullptr))
-    return {};
-
-  stream->SeekAbsolute(old_pos);
-  return ret;
-}
-
-bool WriteQByteArrayToStream(QByteArray& arr, ByteStream* stream)
-{
-  return arr.isEmpty() || stream->Write2(arr.data(), static_cast<u32>(arr.size()));
-}
-
-void OpenURL(QWidget* parent, const QUrl& qurl)
+void QtUtils::OpenURL(QWidget* parent, const QUrl& qurl)
 {
   if (!QDesktopServices::openUrl(qurl))
   {
-    QMessageBox::critical(parent, QObject::tr("Failed to open URL"),
-                          QObject::tr("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
+    QtUtils::AsyncMessageBox(parent, QMessageBox::Critical, QObject::tr("Failed to open URL"),
+                             QObject::tr("Failed to open URL.\n\nThe URL was: %1").arg(qurl.toString()));
   }
 }
 
-void OpenURL(QWidget* parent, const char* url)
+void QtUtils::OpenURL(QWidget* parent, const std::string_view url)
 {
-  return OpenURL(parent, QUrl::fromEncoded(QByteArray(url, static_cast<int>(std::strlen(url)))));
+  return OpenURL(parent, QUrl::fromEncoded(QByteArray(url.data(), static_cast<int>(url.length()))));
 }
 
-void FillComboBoxWithResolutionScales(QComboBox* cb)
-{
-  cb->addItem(qApp->translate("GPUSettingsWidget", "Automatic based on window size"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "1x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "2x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "3x (for 720p)"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "4x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "5x (for 1080p)"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "6x (for 1440p)"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "7x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "8x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "9x (for 4K)"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "10x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "11x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "12x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "13x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "14x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "15x"));
-  cb->addItem(qApp->translate("GPUSettingsWidget", "16x"));
-}
-
-QVariant GetMSAAModeValue(uint multisamples, bool ssaa)
-{
-  const uint userdata = (multisamples & 0x7FFFFFFFu) | (static_cast<uint>(ssaa) << 31);
-  return QVariant(userdata);
-}
-
-void DecodeMSAAModeValue(const QVariant& userdata, uint* multisamples, bool* ssaa)
-{
-  bool ok;
-  const uint value = userdata.toUInt(&ok);
-  if (!ok || value == 0)
-  {
-    *multisamples = 1;
-    *ssaa = false;
-    return;
-  }
-
-  *multisamples = value & 0x7FFFFFFFu;
-  *ssaa = (value & (1u << 31)) != 0u;
-}
-
-void FillComboBoxWithMSAAModes(QComboBox* cb)
-{
-  cb->addItem(qApp->translate("GPUSettingsWidget", "Disabled"), GetMSAAModeValue(1, false));
-
-  for (uint i = 2; i <= 32; i *= 2)
-    cb->addItem(qApp->translate("GPUSettingsWidget", "%1x MSAA").arg(i), GetMSAAModeValue(i, false));
-
-  for (uint i = 2; i <= 32; i *= 2)
-    cb->addItem(qApp->translate("GPUSettingsWidget", "%1x SSAA").arg(i), GetMSAAModeValue(i, true));
-}
-
-std::optional<unsigned> PromptForAddress(QWidget* parent, const QString& title, const QString& label, bool code)
+std::optional<unsigned> QtUtils::PromptForAddress(QWidget* parent, const QString& title, const QString& label,
+                                                  bool code)
 {
   const QString address_str(
     QInputDialog::getText(parent, title, qApp->translate("DebuggerWindow", "Enter memory address:")));
@@ -759,7 +165,7 @@ std::optional<unsigned> PromptForAddress(QWidget* parent, const QString& title, 
 
   if (!ok)
   {
-    QMessageBox::critical(
+    MessageBoxCritical(
       parent, title,
       qApp->translate("DebuggerWindow", "Invalid address. It should be in hex (0x12345678 or 12345678)"));
     return std::nullopt;
@@ -768,12 +174,24 @@ std::optional<unsigned> PromptForAddress(QWidget* parent, const QString& title, 
   return address;
 }
 
-QString StringViewToQString(const std::string_view& str)
+QString QtUtils::StringViewToQString(std::string_view str)
 {
   return str.empty() ? QString() : QString::fromUtf8(str.data(), str.size());
 }
 
-void SetWidgetFontForInheritedSetting(QWidget* widget, bool inherited)
+QUtf8StringView QtUtils::StringViewToQStringView(std::string_view str)
+{
+  return str.empty() ? QUtf8StringView() : QUtf8StringView(str.data(), static_cast<qsizetype>(str.size()));
+}
+
+QString QtUtils::NormalizeLineEndings(QString str)
+{
+  str.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+  str.replace(QChar('\r'), QChar('\n'));
+  return str;
+}
+
+void QtUtils::SetWidgetFontForInheritedSetting(QWidget* widget, bool inherited)
 {
   if (widget->font().italic() != inherited)
   {
@@ -783,7 +201,28 @@ void SetWidgetFontForInheritedSetting(QWidget* widget, bool inherited)
   }
 }
 
-void SetWindowResizeable(QWidget* widget, bool resizeable)
+void QtUtils::BindLabelToSlider(QSlider* slider, QLabel* label, float range /*= 1.0f*/,
+                                const QString& format /*= QStringLiteral()*/)
+{
+  if (format.isEmpty())
+  {
+    auto update_label = [label, range](int new_value) {
+      label->setText(QString::number(static_cast<int>(new_value) / range));
+    };
+    update_label(slider->value());
+    QObject::connect(slider, &QSlider::valueChanged, label, std::move(update_label));
+  }
+  else
+  {
+    auto update_label = [label, range, format](int new_value) {
+      label->setText(format.arg(static_cast<int>(new_value) / range));
+    };
+    update_label(slider->value());
+    QObject::connect(slider, &QSlider::valueChanged, label, std::move(update_label));
+  }
+}
+
+void QtUtils::SetWindowResizeable(QWidget* widget, bool resizeable)
 {
   if (QMainWindow* window = qobject_cast<QMainWindow*>(widget); window)
   {
@@ -809,7 +248,7 @@ void SetWindowResizeable(QWidget* widget, bool resizeable)
   }
 }
 
-void ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int height)
+void QtUtils::ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int height)
 {
   width = std::max(width, 1);
   height = std::max(height, 1);
@@ -819,105 +258,478 @@ void ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int height)
   widget->resize(width, height);
 }
 
-QIcon GetIconForRegion(ConsoleRegion region)
+void QtUtils::SetMessageBoxStyle(QMessageBox* const dlg)
+{
+#ifdef __APPLE__
+  // Can't have a stylesheet set even if it doesn't affect the widget.
+  if (QtHost::HasGlobalStylesheet())
+  {
+    dlg->setStyleSheet("");
+    dlg->setAttribute(Qt::WA_StyleSheet, false);
+  }
+#endif
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxIcon(QWidget* parent, QMessageBox::Icon icon, const QString& title,
+                                                    const QString& text, QMessageBox::StandardButtons buttons,
+                                                    QMessageBox::StandardButton defaultButton)
+{
+#ifndef __APPLE__
+  QMessageBox msgbox(icon, title, text, buttons, parent);
+#else
+  QMessageBox msgbox(icon, QString(), title, buttons, parent);
+  msgbox.setInformativeText(text);
+#endif
+
+  // NOTE: Must be application modal, otherwise will lock up on MacOS.
+  SetMessageBoxStyle(&msgbox);
+  msgbox.setWindowModality(Qt::ApplicationModal);
+  msgbox.setDefaultButton(defaultButton);
+  return static_cast<QMessageBox::StandardButton>(msgbox.exec());
+}
+
+QMessageBox* QtUtils::NewMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                                    QMessageBox::StandardButtons buttons, QMessageBox::StandardButton defaultButton,
+                                    bool delete_on_close)
+{
+#ifndef __APPLE__
+  QMessageBox* msgbox = new QMessageBox(icon, title, text, buttons, parent);
+#else
+  QMessageBox* msgbox = new QMessageBox(icon, QString(), title, buttons, parent);
+  msgbox->setInformativeText(text);
+#endif
+  if (delete_on_close)
+    msgbox->setAttribute(Qt::WA_DeleteOnClose);
+  msgbox->setIcon(icon);
+  SetMessageBoxStyle(msgbox);
+  return msgbox;
+}
+
+void QtUtils::AsyncMessageBox(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text,
+                              QMessageBox::StandardButtons button /*= QMessageBox::Ok*/)
+{
+  QMessageBox* msgbox = NewMessageBox(parent, icon, title, text, button, QMessageBox::NoButton, true);
+  msgbox->open();
+}
+
+void QtUtils::StylePopupMenu(QMenu* menu)
+{
+  if (QtHost::HasGlobalStylesheet())
+  {
+    menu->setWindowFlags(menu->windowFlags() | Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint);
+    menu->setAttribute(Qt::WA_TranslucentBackground, true);
+  }
+  else
+  {
+    if (!(menu->windowFlags() & Qt::NoDropShadowWindowHint))
+      return;
+
+    menu->setWindowFlags(menu->windowFlags() & ~(Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint));
+    menu->setAttribute(Qt::WA_TranslucentBackground, false);
+  }
+}
+
+void QtUtils::StyleChildMenus(QWidget* widget)
+{
+  for (QMenu* menu : widget->findChildren<QMenu*>())
+    StylePopupMenu(menu);
+}
+
+QMenu* QtUtils::NewPopupMenu(QWidget* parent, bool delete_on_close /*= true*/)
+{
+  QMenu* menu = new QMenu(parent);
+  if (QtHost::HasGlobalStylesheet())
+  {
+    menu->setWindowFlags(menu->windowFlags() | Qt::NoDropShadowWindowHint | Qt::FramelessWindowHint);
+    menu->setAttribute(Qt::WA_TranslucentBackground, true);
+  }
+
+  if (delete_on_close)
+    menu->setAttribute(Qt::WA_DeleteOnClose, true);
+
+  return menu;
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxInformation(QWidget* parent, const QString& title, const QString& text,
+                                                           QMessageBox::StandardButtons buttons,
+                                                           QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Information, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxWarning(QWidget* parent, const QString& title, const QString& text,
+                                                       QMessageBox::StandardButtons buttons,
+                                                       QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Warning, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxCritical(QWidget* parent, const QString& title, const QString& text,
+                                                        QMessageBox::StandardButtons buttons,
+                                                        QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Critical, title, text, buttons, defaultButton);
+}
+
+QMessageBox::StandardButton QtUtils::MessageBoxQuestion(QWidget* parent, const QString& title, const QString& text,
+                                                        QMessageBox::StandardButtons buttons,
+                                                        QMessageBox::StandardButton defaultButton)
+{
+  return MessageBoxIcon(parent, QMessageBox::Question, title, text, buttons, defaultButton);
+}
+
+QIcon QtUtils::GetIconForTranslationLanguage(std::string_view language_name)
+{
+  QString icon_path;
+
+  if (!language_name.empty())
+  {
+    const QLatin1StringView qlanguage_name(language_name.data(), language_name.length());
+    icon_path = QStringLiteral(":/icons/flags/%1.png").arg(qlanguage_name);
+    if (!QFile::exists(icon_path))
+    {
+      // try without the suffix (e.g. es-es -> es)
+      const qsizetype index = qlanguage_name.indexOf('-');
+      if (index >= 0)
+        icon_path = QStringLiteral(":/icons/flags/%1.png").arg(qlanguage_name.left(index));
+    }
+  }
+  else
+  {
+    // no language specified, use the default icon
+    icon_path = QStringLiteral(":/icons/applications-system.png");
+  }
+
+  return QIcon(icon_path);
+}
+
+QIcon QtUtils::GetIconForRegion(ConsoleRegion region)
 {
   switch (region)
   {
     case ConsoleRegion::NTSC_J:
-      return QIcon(QStringLiteral(":/icons/flag-jp.svg"));
-    case ConsoleRegion::PAL:
-      return QIcon(QStringLiteral(":/icons/flag-eu.svg"));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-J.svg", true));
+
     case ConsoleRegion::NTSC_U:
-      return QIcon(QStringLiteral(":/icons/flag-uc.svg"));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-U.svg", true));
+
+    case ConsoleRegion::PAL:
+      return QIcon(QtHost::GetResourceQPath("images/flags/PAL.svg", true));
+
+    case ConsoleRegion::Auto:
+      return QIcon(":/icons/system-search.png"_L1);
+
     default:
-      return QIcon::fromTheme(QStringLiteral("file-unknow-line"));
+      return QIcon::fromTheme("file-unknow-line"_L1);
   }
 }
 
-QIcon GetIconForRegion(DiscRegion region)
+QIcon QtUtils::GetIconForRegion(DiscRegion region)
 {
   switch (region)
   {
     case DiscRegion::NTSC_J:
-      return QIcon(QStringLiteral(":/icons/flag-jp.svg"));
-    case DiscRegion::PAL:
-      return QIcon(QStringLiteral(":/icons/flag-eu.svg"));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-J.svg", true));
+
     case DiscRegion::NTSC_U:
-      return QIcon(QStringLiteral(":/icons/flag-uc.svg"));
+      return QIcon(QtHost::GetResourceQPath("images/flags/NTSC-U.svg", true));
+
+    case DiscRegion::PAL:
+      return QIcon(QtHost::GetResourceQPath("images/flags/PAL.svg", true));
+
     case DiscRegion::Other:
+    case DiscRegion::NonPS1:
     default:
-      return QIcon::fromTheme(QStringLiteral("file-unknow-line"));
+      return QIcon::fromTheme("file-unknow-line"_L1);
   }
 }
 
-QIcon GetIconForEntryType(GameList::EntryType type)
+QIcon QtUtils::GetIconForEntryType(GameList::EntryType type)
 {
   switch (type)
   {
     case GameList::EntryType::Disc:
-      return QIcon::fromTheme(QStringLiteral("dvd-line"));
+      return QIcon::fromTheme("disc-line"_L1);
     case GameList::EntryType::Playlist:
-      return QIcon::fromTheme(QStringLiteral("play-list-2-line"));
+      return QIcon::fromTheme("play-list-2-line"_L1);
+    case GameList::EntryType::DiscSet:
+      return QIcon::fromTheme("multi-discs"_L1);
     case GameList::EntryType::PSF:
-      return QIcon::fromTheme(QStringLiteral("file-music-line"));
+      return QIcon::fromTheme("file-music-line"_L1);
     case GameList::EntryType::PSExe:
     default:
-      return QIcon::fromTheme(QStringLiteral("settings-5-line"));
+      return QIcon::fromTheme("settings-3-line"_L1);
   }
 }
 
-QIcon GetIconForCompatibility(GameDatabase::CompatibilityRating rating)
+QIcon QtUtils::GetIconForCompatibility(GameDatabase::CompatibilityRating rating)
 {
-  return QIcon(QStringLiteral(":/icons/star-%1.png").arg(static_cast<u32>(rating)));
+  return QIcon(QtHost::GetResourceQPath(TinyString::from_format("images/star-{}.svg", static_cast<u32>(rating)), true));
 }
 
-qreal GetDevicePixelRatioForWidget(const QWidget* widget)
+QIcon QtUtils::GetIconForLanguage(std::string_view language_name)
 {
-  const QScreen* screen_for_ratio = widget->screen();
-  if (!screen_for_ratio)
-    screen_for_ratio = QGuiApplication::primaryScreen();
-
-  return screen_for_ratio ? screen_for_ratio->devicePixelRatio() : static_cast<qreal>(1);
+  return QIcon(QtHost::GetResourceQPath(GameDatabase::GetLanguageFlagResourceName(language_name), true));
 }
 
-std::optional<WindowInfo> GetWindowInfoForWidget(QWidget* widget)
+template<typename T>
+static void ResizeSharpBilinearT(T& pm, int size, int base_size)
 {
-  WindowInfo wi;
+  // Sharp Bilinear scaling
+  // First, scale the icon by the next largest integer size using nearest-neighbor...
+  const int integer_icon_size = static_cast<int>(std::ceil(static_cast<float>(size) / base_size) * base_size);
+  if (pm.width() != integer_icon_size || pm.height() != integer_icon_size)
+    pm = pm.scaled(integer_icon_size, integer_icon_size, Qt::IgnoreAspectRatio, Qt::FastTransformation);
 
-  // Windows and Apple are easy here since there's no display connection.
+  // ...then scale down any remainder using bilinear interpolation.
+  if ((integer_icon_size - size) > 0)
+    pm = pm.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+}
+
+void QtUtils::ResizeSharpBilinear(QPixmap& pm, int size, int base_size)
+{
+  ResizeSharpBilinearT(pm, size, base_size);
+}
+
+void QtUtils::ResizeSharpBilinear(QImage& pm, int size, int base_size)
+{
+  ResizeSharpBilinearT(pm, size, base_size);
+}
+
+QSize QtUtils::ApplyDevicePixelRatioToSize(const QSize& size, qreal device_pixel_ratio)
+{
+  return QSize(static_cast<int>(std::ceil(static_cast<qreal>(size.width()) * device_pixel_ratio)),
+               static_cast<int>(std::ceil(static_cast<qreal>(size.height()) * device_pixel_ratio)));
+}
+
+QSize QtUtils::GetDeviceIndependentSize(const QSize& size, qreal device_pixel_ratio)
+{
+  return QSize(std::max(static_cast<int>(std::ceil(static_cast<qreal>(size.width()) / device_pixel_ratio)), 1),
+               std::max(static_cast<int>(std::ceil(static_cast<qreal>(size.height()) / device_pixel_ratio)), 1));
+}
+
+void QtUtils::SaveWindowGeometry(QWidget* widget, bool auto_commit_changes /* = true */)
+{
+  SaveWindowGeometry(widget->metaObject()->className(), widget, auto_commit_changes);
+}
+
+void QtUtils::SaveWindowGeometry(std::string_view window_name, QWidget* widget, bool auto_commit_changes)
+{
+  // don't touch minimized/fullscreen windows
+  if (widget->windowState() & (Qt::WindowMinimized | Qt::WindowFullScreen))
+    return;
+
+  // save the unmaximized geometry if maximized
+  const bool maximized = (widget->windowState() & Qt::WindowMaximized);
+  const QRect geometry = maximized ? widget->normalGeometry() : widget->geometry();
+
+  const TinyString maxkey = TinyString::from_format("{}Maximized", window_name);
+  const TinyString xkey = TinyString::from_format("{}X", window_name);
+  const TinyString ykey = TinyString::from_format("{}Y", window_name);
+  const TinyString wkey = TinyString::from_format("{}Width", window_name);
+  const TinyString hkey = TinyString::from_format("{}Height", window_name);
+
+  const auto lock = Core::GetSettingsLock();
+  SettingsInterface* si = Core::GetBaseSettingsLayer();
+
+  bool changed = false;
+  if (si->GetBoolValue(WINDOW_GEOMETRY_CONFIG_SECTION, maxkey.c_str(), false) != maximized)
+  {
+    si->SetBoolValue(WINDOW_GEOMETRY_CONFIG_SECTION, maxkey.c_str(), maximized);
+    changed = true;
+  }
+
+  if (si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, xkey.c_str(), std::numeric_limits<s32>::min()) != geometry.x())
+  {
+    si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, xkey.c_str(), geometry.x());
+    changed = true;
+  }
+
+  if (si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, ykey.c_str(), std::numeric_limits<s32>::min()) != geometry.y())
+  {
+    si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, ykey.c_str(), geometry.y());
+    changed = true;
+  }
+
+  // only save position if maxi
+
+  if (si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, wkey.c_str(), std::numeric_limits<s32>::min()) !=
+      geometry.width())
+  {
+    si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, wkey.c_str(), geometry.width());
+    changed = true;
+  }
+
+  if (si->GetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, hkey.c_str(), std::numeric_limits<s32>::min()) !=
+      geometry.height())
+  {
+    si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, hkey.c_str(), geometry.height());
+    changed = true;
+  }
+
+  if (changed && auto_commit_changes)
+    Host::CommitBaseSettingChanges();
+}
+
+bool QtUtils::RestoreWindowGeometry(QWidget* widget)
+{
+  return RestoreWindowGeometry(widget->metaObject()->className(), widget);
+}
+
+bool QtUtils::RestoreWindowGeometry(std::string_view window_name, QWidget* widget)
+{
+  const auto lock = Core::GetSettingsLock();
+  SettingsInterface* si = Core::GetBaseSettingsLayer();
+
+  s32 x = 0, y = 0, w = 0, h = 0;
+  const bool maximized = si->GetBoolValue(WINDOW_GEOMETRY_CONFIG_SECTION,
+                                          TinyString::from_format("{}Maximized", window_name).c_str(), false);
+  if (!si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}X", window_name).c_str(), &x) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Y", window_name).c_str(), &y) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Width", window_name).c_str(), &w) ||
+      !si->FindIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Height", window_name).c_str(), &h))
+  {
+    return TryMigrateWindowGeometry(si, window_name, widget);
+  }
+
+  // Ensure that the geometry is not off-screen. This is quite painful to do, but better than spawning the
+  // window off-screen. It also won't work on Wankland, and apparently doesn't support multiple monitors
+  // on X11, but who cares. I'm just going to disable the whole thing on Linux, because I don't want to
+  // deal with people moaning that their window manager's behavior is causing positions to revert to the
+  // primary monitor, so just yolo it and hope for the best....
+#ifndef __linux__
+  bool window_is_offscreen = true;
+  for (const QScreen* screen : qApp->screens())
+  {
+    const QRect screen_geometry = screen->geometry();
+    if (screen_geometry.contains(x, y))
+    {
+      window_is_offscreen = false;
+      break;
+    }
+  }
+  if (window_is_offscreen)
+  {
+    // If the window is off-screen, we will just center it on the primary screen.
+    const QScreen* primary_screen = QGuiApplication::primaryScreen();
+    if (primary_screen)
+    {
+      // Might be a different monitor, clamp to size.
+      const QRect screen_geometry = primary_screen->availableGeometry();
+      w = std::min(w, screen_geometry.width());
+      h = std::min(h, screen_geometry.height());
+      x = screen_geometry.x() + (screen_geometry.width() - w) / 2;
+      y = screen_geometry.y() + (screen_geometry.height() - h) / 2;
+    }
+
+    WARNING_LOG("Saved window position for {} is off-screen, centering to primary screen ({},{} w={},h={})",
+                window_name, x, y, w, h);
+  }
+#endif // __linux__
+
+  widget->setGeometry(x, y, w, h);
+  if (maximized)
+    widget->setWindowState(widget->windowState() | Qt::WindowMaximized);
+
+  return true;
+}
+
+void QtUtils::CenterWindowRelativeToParent(QWidget* window, const QWidget* parent_window)
+{
+  // la la la, this won't work on fucking wankland, I don't care, it'll appear in the top-left
+  // corner of the screen or whatever, shit experience is shit
+
+  const QRect& parent_geometry = (parent_window && parent_window->isVisible()) ?
+                                   parent_window->geometry() :
+                                   QGuiApplication::primaryScreen()->availableGeometry();
+  const QPoint parent_center_pos = parent_geometry.center();
+
+  QRect window_geometry = window->geometry();
+  window_geometry.moveCenter(parent_center_pos);
+
+  window->setGeometry(window_geometry);
+}
+
+bool QtUtils::TryMigrateWindowGeometry(SettingsInterface* si, std::string_view window_name, QWidget* widget)
+{
+  // can we migrate old configuration?
+  const TinyString config_key = TinyString::from_format("{}Geometry", window_name);
+  std::string_view config_value;
+  if (!si->FindStringValue(WINDOW_GEOMETRY_CONFIG_SECTION, config_key.c_str(), &config_value))
+    return false;
+
+  widget->restoreGeometry(QByteArray::fromBase64(QByteArray::fromRawData(config_value.data(), config_value.size())));
+
+  // make sure we're not loading a dodgy config which had fullscreen set...
+  widget->setWindowState(widget->windowState() & ~(Qt::WindowFullScreen | Qt::WindowActive));
+
+  // save the new values, delete the old key
+  const bool maximized = (widget->windowState() & Qt::WindowMaximized);
+  const QRect geometry = maximized ? widget->normalGeometry() : widget->geometry();
+  si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}X", window_name).c_str(), geometry.x());
+  si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Y", window_name).c_str(), geometry.y());
+  si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Width", window_name).c_str(),
+                  geometry.width());
+  si->SetIntValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Height", window_name).c_str(),
+                  geometry.height());
+  si->SetBoolValue(WINDOW_GEOMETRY_CONFIG_SECTION, TinyString::from_format("{}Maximized", window_name).c_str(),
+                   maximized);
+  si->DeleteValue(WINDOW_GEOMETRY_CONFIG_SECTION, config_key.c_str());
+  Host::CommitBaseSettingChanges();
+  return true;
+}
+
+std::optional<u32> QtUtils::KeyEventToCode(const QKeyEvent* ev)
+{
+  u32 scancode = ev->nativeScanCode();
+
 #if defined(_WIN32)
-  wi.type = WindowInfo::Type::Win32;
-  wi.window_handle = reinterpret_cast<void*>(widget->winId());
+  // According to https://github.com/nyanpasu64/qkeycode/blob/master/src/qkeycode/qkeycode.cpp#L151,
+  // we need to convert the bit flag here.
+  if (scancode & 0x100)
+    scancode = (scancode - 0x100) | 0xe000;
+
 #elif defined(__APPLE__)
-  wi.type = WindowInfo::Type::MacOS;
-  wi.window_handle = reinterpret_cast<void*>(widget->winId());
-#else
-  QPlatformNativeInterface* pni = QGuiApplication::platformNativeInterface();
-  const QString platform_name = QGuiApplication::platformName();
-  if (platform_name == QStringLiteral("xcb"))
+#if 0
+  // On macOS, Qt applies the Keypad modifier regardless of whether the arrow keys, or numpad was pressed.
+  // The only way to differentiate between the keypad and the arrow keys is by the text.
+  // Hopefully some keyboard layouts don't change the numpad positioning...
+  Qt::KeyboardModifiers modifiers = ev->modifiers();
+  if (modifiers & Qt::KeypadModifier && key >= Qt::Key_Insert && key <= Qt::Key_PageDown)
   {
-    wi.type = WindowInfo::Type::X11;
-    wi.display_connection = pni->nativeResourceForWindow("display", widget->windowHandle());
-    wi.window_handle = reinterpret_cast<void*>(widget->winId());
-  }
-  else if (platform_name == QStringLiteral("wayland"))
-  {
-    wi.type = WindowInfo::Type::Wayland;
-    wi.display_connection = pni->nativeResourceForWindow("display", widget->windowHandle());
-    wi.window_handle = pni->nativeResourceForWindow("surface", widget->windowHandle());
-  }
-  else
-  {
-    qCritical() << "Unknown PNI platform " << platform_name;
-    return std::nullopt;
+    if (ev->text().isEmpty())
+    {
+      // Drop the modifier, because it's probably not actually a numpad push.
+      modifiers &= ~Qt::KeypadModifier;
+    }
   }
 #endif
 
-  const qreal dpr = GetDevicePixelRatioForWidget(widget);
-  wi.surface_width = static_cast<u32>(static_cast<qreal>(widget->width()) * dpr);
-  wi.surface_height = static_cast<u32>(static_cast<qreal>(widget->height()) * dpr);
-  wi.surface_scale = static_cast<float>(dpr);
-  return wi;
-}
+  // Stored in virtual key not scancode.
+  if (scancode == 0)
+    scancode = ev->nativeVirtualKey();
 
-} // namespace QtUtils
+  // Undo Qt swapping of control/meta.
+  // It also can't differentiate between left and right control/meta keys...
+  const int qt_key = ev->key();
+  switch (qt_key)
+  {
+    case Qt::Key_Shift:
+      return static_cast<u32>(USBKeyCode::ShiftLeft);
+    case Qt::Key_Meta:
+      return static_cast<u32>(USBKeyCode::ControlLeft);
+    case Qt::Key_Control:
+      return static_cast<u32>(USBKeyCode::MetaLeft);
+    case Qt::Key_Alt:
+      return static_cast<u32>(USBKeyCode::AltLeft);
+    case Qt::Key_CapsLock:
+      return static_cast<u32>(USBKeyCode::CapsLock);
+    default:
+      break;
+  }
+#else
+
+#endif
+
+  return InputManager::ConvertHostNativeKeyCodeToKeyCode(scancode);
+}

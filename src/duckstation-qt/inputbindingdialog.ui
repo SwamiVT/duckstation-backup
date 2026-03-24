@@ -2,22 +2,16 @@
 <ui version="4.0">
  <class>InputBindingDialog</class>
  <widget class="QDialog" name="InputBindingDialog">
-  <property name="windowModality">
-   <enum>Qt::WindowModal</enum>
-  </property>
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
     <width>533</width>
-    <height>283</height>
+    <height>266</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Edit Bindings</string>
-  </property>
-  <property name="modal">
-   <bool>true</bool>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -29,6 +23,113 @@
    </item>
    <item>
     <widget class="QListWidget" name="bindingList"/>
+   </item>
+   <item>
+    <widget class="QWidget" name="sensitivityWidget" native="true">
+     <layout class="QGridLayout" name="sensitivityLayout">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item row="0" column="1">
+       <widget class="QSlider" name="sensitivity">
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>200</number>
+        </property>
+        <property name="value">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSlider" name="deadzone">
+        <property name="minimum">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="0">
+       <widget class="QLabel" name="sensitivityLabel">
+        <property name="text">
+         <string>Sensitivity:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="sensitivityValue">
+        <property name="minimumSize">
+         <size>
+          <width>36</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>100%</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="deadzoneLabel">
+        <property name="text">
+         <string>Deadzone:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QLabel" name="deadzoneValue">
+        <property name="minimumSize">
+         <size>
+          <width>36</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>100%</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="resetSensitivity">
+        <property name="toolTip">
+         <string>Reset Sensitivity</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="resetDeadzone">
+        <property name="toolTip">
+         <string>Reset Deadzone</string>
+        </property>
+        <property name="icon">
+         <iconset theme="restart-line"/>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
    </item>
    <item>
     <widget class="QLabel" name="status">
@@ -44,12 +145,18 @@
        <property name="text">
         <string>Add Binding</string>
        </property>
+       <property name="icon">
+        <iconset theme="add-line"/>
+       </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="removeBinding">
        <property name="text">
         <string>Remove Binding</string>
+       </property>
+       <property name="icon">
+        <iconset theme="minus-line"/>
        </property>
       </widget>
      </item>
@@ -58,12 +165,15 @@
        <property name="text">
         <string>Clear Bindings</string>
        </property>
+       <property name="icon">
+        <iconset theme="trash-fill"/>
+       </property>
       </widget>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
        <property name="standardButtons">
-        <set>QDialogButtonBox::Close</set>
+        <set>QDialogButtonBox::StandardButton::Close</set>
        </property>
       </widget>
      </item>

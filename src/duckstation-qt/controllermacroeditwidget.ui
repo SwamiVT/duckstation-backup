@@ -6,14 +6,11 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>595</width>
-    <height>473</height>
+    <width>640</width>
+    <height>436</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>Form</string>
-  </property>
-  <layout class="QVBoxLayout" name="verticalLayout">
+  <layout class="QVBoxLayout" name="verticalLayout" stretch="1,0,0,0">
    <property name="leftMargin">
     <number>0</number>
    </property>
@@ -31,8 +28,8 @@
      <property name="title">
       <string>Binds/Buttons</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout_2">
-      <item row="0" column="0">
+     <layout class="QVBoxLayout" name="verticalLayout_2">
+      <item>
        <widget class="QLabel" name="label_2">
         <property name="text">
          <string>Select the buttons which you want to trigger with this macro. All buttons are activated concurrently.</string>
@@ -42,8 +39,60 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
+      <item>
        <widget class="QListWidget" name="bindList"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_4">
+     <property name="title">
+      <string>Pressure</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_3">
+      <item>
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>For buttons which are pressure sensitive, this slider controls how much force will be simulated when the macro is active.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="pressureLayout">
+        <item>
+         <widget class="QSlider" name="pressure">
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+          <property name="value">
+           <number>100</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="pressureValue">
+          <property name="minimumSize">
+           <size>
+            <width>36</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>100%</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
      </layout>
     </widget>
@@ -53,26 +102,77 @@
      <property name="title">
       <string>Trigger</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout">
-      <item row="0" column="0" colspan="2">
-       <widget class="QLabel" name="label">
+     <layout class="QVBoxLayout" name="verticalLayout_4">
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_5" stretch="1,0">
+        <item>
+         <widget class="QLabel" name="label">
+          <property name="text">
+           <string>Select the trigger to activate this macro. This can be a single button, or combination of buttons (chord). Shift-click for multiple triggers.</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="triggerToggle">
+          <property name="text">
+           <string>Press To Toggle</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="InputBindingWidget" name="trigger">
         <property name="text">
-         <string>Select the trigger to activate this macro. This can be a single button, or combination of buttons (chord). Shift-click for multiple triggers.</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
+         <string notr="true">PushButton</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="0" colspan="2">
-       <widget class="InputBindingWidget" name="trigger">
-        <property name="text">
-         <string>PushButton</string>
-        </property>
-       </widget>
+      <item>
+       <layout class="QHBoxLayout" name="deadzoneLayout" stretch="0,1,0">
+        <item>
+         <widget class="QLabel" name="label_4">
+          <property name="text">
+           <string>Deadzone:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSlider" name="deadzone">
+          <property name="minimum">
+           <number>0</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+          <property name="value">
+           <number>100</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="deadzoneValue">
+          <property name="minimumSize">
+           <size>
+            <width>36</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>100%</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
      </layout>
     </widget>
@@ -82,8 +182,8 @@
      <property name="title">
       <string>Frequency</string>
      </property>
-     <layout class="QGridLayout" name="gridLayout_3">
-      <item row="0" column="0">
+     <layout class="QVBoxLayout" name="verticalLayout_5">
+      <item>
        <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0,0,0">
         <item>
          <widget class="QLabel" name="frequencyText">
@@ -100,28 +200,22 @@
          </widget>
         </item>
         <item>
-         <widget class="QToolButton" name="increaseFrequency">
+         <widget class="QPushButton" name="increaseFrequency">
           <property name="minimumSize">
            <size>
             <width>0</width>
             <height>20</height>
            </size>
-          </property>
-          <property name="arrowType">
-           <enum>Qt::UpArrow</enum>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QToolButton" name="decreateFrequency">
+         <widget class="QPushButton" name="decreateFrequency">
           <property name="minimumSize">
            <size>
             <width>0</width>
             <height>20</height>
            </size>
-          </property>
-          <property name="arrowType">
-           <enum>Qt::DownArrow</enum>
           </property>
          </widget>
         </item>
@@ -129,19 +223,6 @@
       </item>
      </layout>
     </widget>
-   </item>
-   <item>
-    <spacer name="verticalSpacer">
-     <property name="orientation">
-      <enum>Qt::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
-      <size>
-       <width>20</width>
-       <height>40</height>
-      </size>
-     </property>
-    </spacer>
    </item>
   </layout>
  </widget>

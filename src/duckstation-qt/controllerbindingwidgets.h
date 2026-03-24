@@ -1,29 +1,25 @@
+// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+
 #pragma once
 
 #include "core/controller.h"
 #include "core/settings.h"
+
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QWidget>
 #include <functional>
 #include <vector>
 
 #include "ui_controllerbindingwidget.h"
-#include "ui_controllerbindingwidget_analog_controller.h"
-#include "ui_controllerbindingwidget_analog_joystick.h"
-#include "ui_controllerbindingwidget_digital_controller.h"
-#include "ui_controllerbindingwidget_guncon.h"
-#include "ui_controllerbindingwidget_mouse.h"
-#include "ui_controllerbindingwidget_negcon.h"
 #include "ui_controllermacroeditwidget.h"
-#include "ui_controllermacrowidget.h"
-
-class QVBoxLayout;
 
 class InputBindingWidget;
-class ControllerSettingsDialog;
+class ControllerSettingsWindow;
 class ControllerCustomSettingsWidget;
 class ControllerMacroWidget;
 class ControllerMacroEditWidget;
-class ControllerBindingWidget_Base;
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -32,64 +28,64 @@ class ControllerBindingWidget final : public QWidget
   Q_OBJECT
 
 public:
-  ControllerBindingWidget(QWidget* parent, ControllerSettingsDialog* dialog, u32 port);
+  ControllerBindingWidget(QWidget* parent, ControllerSettingsWindow* dialog, u32 port);
   ~ControllerBindingWidget();
 
-  QIcon getIcon() const;
-
-  ALWAYS_INLINE ControllerSettingsDialog* getDialog() const { return m_dialog; }
+  ALWAYS_INLINE ControllerSettingsWindow* getDialog() const { return m_dialog; }
   ALWAYS_INLINE const std::string& getConfigSection() const { return m_config_section; }
-  ALWAYS_INLINE ControllerType getControllerType() const { return m_controller_type; }
+  ALWAYS_INLINE const Controller::ControllerInfo* getControllerInfo() const { return m_controller_info; }
   ALWAYS_INLINE u32 getPortNumber() const { return m_port_number; }
+  ALWAYS_INLINE const QIcon& getIcon() { return m_icon; }
 
-private Q_SLOTS:
+private:
+  void populateControllerTypes();
+  void populateWidgets();
+  void createBindingWidgets(QWidget* parent);
+  void bindBindingWidgets(QWidget* parent);
+  void updateHeaderToolButtons();
+  void doDeviceAutomaticBinding(const QString& device);
+  void saveAndRefresh();
+
   void onTypeChanged();
   void onAutomaticBindingClicked();
   void onClearBindingsClicked();
   void onBindingsClicked();
   void onSettingsClicked();
   void onMacrosClicked();
-
-private:
-  void populateControllerTypes();
-  void populateWidgets();
-  void updateHeaderToolButtons();
-  void doDeviceAutomaticBinding(const QString& device);
-  void saveAndRefresh();
+  void onMultipleDeviceAutomaticBindingTriggered();
 
   Ui::ControllerBindingWidget m_ui;
 
-  ControllerSettingsDialog* m_dialog;
+  ControllerSettingsWindow* m_dialog;
 
   std::string m_config_section;
-  ControllerType m_controller_type;
+  const Controller::ControllerInfo* m_controller_info;
   u32 m_port_number;
 
-  ControllerBindingWidget_Base* m_bindings_widget = nullptr;
+  QIcon m_icon;
+  QWidget* m_bindings_widget = nullptr;
   ControllerCustomSettingsWidget* m_settings_widget = nullptr;
   ControllerMacroWidget* m_macros_widget = nullptr;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class ControllerMacroWidget : public QWidget
+class ControllerMacroWidget : public QSplitter
 {
   Q_OBJECT
 
 public:
-  ControllerMacroWidget(ControllerBindingWidget* parent);
+  explicit ControllerMacroWidget(ControllerBindingWidget* parent);
   ~ControllerMacroWidget();
 
   void updateListItem(u32 index);
 
 private:
-  static constexpr u32 NUM_MACROS = InputManager::NUM_MACRO_BUTTONS_PER_CONTROLLER;
+  void createWidgets(ControllerBindingWidget* bwidget);
 
-  void createWidgets(ControllerBindingWidget* parent);
-
-  Ui::ControllerMacroWidget m_ui;
-  ControllerSettingsDialog* m_dialog;
-  std::array<ControllerMacroEditWidget*, NUM_MACROS> m_macros;
+  QListWidget* m_macroList;
+  QStackedWidget* m_container;
+  std::array<ControllerMacroEditWidget*, InputManager::NUM_MACRO_BUTTONS_PER_CONTROLLER> m_macros;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -104,14 +100,15 @@ public:
 
   QString getSummary() const;
 
-private Q_SLOTS:
-  void onSetFrequencyClicked();
-  void updateBinds();
-
 private:
   void modFrequency(s32 delta);
   void updateFrequency();
   void updateFrequencyText();
+
+  void onPressureChanged();
+  void onDeadzoneChanged();
+  void onSetFrequencyClicked();
+  void updateBinds();
 
   Ui::ControllerMacroEditWidget m_ui;
 
@@ -130,155 +127,40 @@ class ControllerCustomSettingsWidget : public QWidget
   Q_OBJECT
 
 public:
-  ControllerCustomSettingsWidget(ControllerBindingWidget* parent);
+  explicit ControllerCustomSettingsWidget(ControllerBindingWidget* parent);
   ~ControllerCustomSettingsWidget();
 
-  void createSettingWidgets(ControllerBindingWidget* parent, QWidget* parent_widget, QGridLayout* layout,
-                            const Controller::ControllerInfo* cinfo);
-
-private Q_SLOTS:
+private:
   void restoreDefaults();
 
-private:
   ControllerBindingWidget* m_parent;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class ControllerBindingWidget_Base : public QWidget
+class ControllerCustomSettingsDialog final : public QDialog
 {
-  Q_OBJECT
-
 public:
-  ControllerBindingWidget_Base(ControllerBindingWidget* parent);
-  virtual ~ControllerBindingWidget_Base();
-
-  ALWAYS_INLINE ControllerSettingsDialog* getDialog() const
-  {
-    return static_cast<ControllerBindingWidget*>(parent())->getDialog();
-  }
-  ALWAYS_INLINE const std::string& getConfigSection() const
-  {
-    return static_cast<ControllerBindingWidget*>(parent())->getConfigSection();
-  }
-  ALWAYS_INLINE ControllerType getControllerType() const
-  {
-    return static_cast<ControllerBindingWidget*>(parent())->getControllerType();
-  }
-  ALWAYS_INLINE u32 getPortNumber() const { return static_cast<ControllerBindingWidget*>(parent())->getPortNumber(); }
-
-  virtual QIcon getIcon() const;
-
-protected:
-  void initBindingWidgets();
+  ControllerCustomSettingsDialog(QWidget* parent, SettingsInterface* sif, const std::string& section,
+                                 std::span<const SettingInfo> settings, const char* tr_context,
+                                 const QString& window_title);
+  ~ControllerCustomSettingsDialog();
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class ControllerBindingWidget_DigitalController final : public ControllerBindingWidget_Base
+class MultipleDeviceAutobindDialog final : public QDialog
 {
   Q_OBJECT
 
 public:
-  ControllerBindingWidget_DigitalController(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_DigitalController();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
+  MultipleDeviceAutobindDialog(QWidget* parent, ControllerSettingsWindow* settings_window, u32 port);
+  ~MultipleDeviceAutobindDialog();
 
 private:
-  Ui::ControllerBindingWidget_DigitalController m_ui;
+  void doAutomaticBinding();
+
+  QListWidget* m_list;
+  ControllerSettingsWindow* m_settings_window;
+  u32 m_port;
 };
-
-//////////////////////////////////////////////////////////////////////////
-
-class ControllerBindingWidget_AnalogController final : public ControllerBindingWidget_Base
-{
-  Q_OBJECT
-
-public:
-  ControllerBindingWidget_AnalogController(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_AnalogController();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
-
-private:
-  Ui::ControllerBindingWidget_AnalogController m_ui;
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class ControllerBindingWidget_AnalogJoystick final : public ControllerBindingWidget_Base
-{
-  Q_OBJECT
-
-public:
-  ControllerBindingWidget_AnalogJoystick(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_AnalogJoystick();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
-
-private:
-  Ui::ControllerBindingWidget_AnalogJoystick m_ui;
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class ControllerBindingWidget_NeGcon final : public ControllerBindingWidget_Base
-{
-  Q_OBJECT
-
-public:
-  ControllerBindingWidget_NeGcon(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_NeGcon();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
-
-private:
-  Ui::ControllerBindingWidget_NeGcon m_ui;
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class ControllerBindingWidget_GunCon final : public ControllerBindingWidget_Base
-{
-  Q_OBJECT
-
-public:
-  ControllerBindingWidget_GunCon(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_GunCon();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
-
-private:
-  Ui::ControllerBindingWidget_GunCon m_ui;
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-class ControllerBindingWidget_Mouse final : public ControllerBindingWidget_Base
-{
-  Q_OBJECT
-
-public:
-  ControllerBindingWidget_Mouse(ControllerBindingWidget* parent);
-  ~ControllerBindingWidget_Mouse();
-
-  QIcon getIcon() const override;
-
-  static ControllerBindingWidget_Base* createInstance(ControllerBindingWidget* parent);
-
-private:
-  Ui::ControllerBindingWidget_Mouse m_ui;
-};
-
-//////////////////////////////////////////////////////////////////////////
